@@ -1,0 +1,9 @@
+Report ID,Report Name,Report Type,Department,Uploaded By,Uploaded Date,File Type,Status,Actions
+RPT-001,Monthly Admin Operations,Operations Summary,Admin,Nishant Sharma,2026-05-01,PDF,Published,View / Download
+RPT-002,IT Ticket Resolution Log,Ticket Report,IT,Aarav Mehta,2026-05-02,CSV,Ready,View / Download
+RPT-003,Vendor Performance Review,Vendor Report,Procurement,Riya Kapoor,2026-05-03,PDF,Under Review,Review
+RPT-004,Expense Exception Summary,Finance Report,Finance,Dev Rao,2026-05-04,XLSX,Action Needed,Review / Approve
+RPT-005,Inventory Stock Alert,Inventory Report,Facilities,Ananya Iyer,2026-05-05,PDF,Published,View / Download
+RPT-006,Travel Booking Compliance,Compliance Report,Travel Desk,Kabir Singh,2026-05-06,CSV,Ready,View / Download
+RPT-007,Floor Activity Report,Daily Activity,Operations,Meera Nair,2026-05-07,PDF,Published,View / Download
+RPT-008,Approval Pending Queue,Approval Report,Admin,Ishaan Verma,2026-05-08,PDF,Action Needed,Review / Approve

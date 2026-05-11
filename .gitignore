@@ -1,0 +1,13 @@
+.DS_Store
+.env
+!.env.example
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+backend/.venv/
+backend/admin_agent.db
+node_modules/
+dist/
+frontend/dist/
+*.log
