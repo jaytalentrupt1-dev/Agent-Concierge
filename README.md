@@ -21,7 +21,7 @@ Local FastAPI + React MVP for an AI admin agent. The first complete workflow is 
 - Backend: Python FastAPI
 - Frontend: React + Vite
 - Database: SQLite
-- AI layer: OpenAI Responses API planning layer with deterministic mock fallback
+- AI layer: deterministic local/mock Conci AI fallback, optional DeepInfra chat completions for Conci AI, and OpenAI Responses API planning support
 - Safety: policy service gates external vendor communication and other risky actions
 
 OpenAI's docs recommend the Agents SDK when an app needs code-first orchestration, tools, handoffs, guardrails, tracing, or sandbox execution:
@@ -113,28 +113,64 @@ Create local environment settings from the committed example file:
 cp .env.example .env
 ```
 
-Put your real OpenAI API key in `.env`:
+To use DeepInfra credits for Conci AI, put your real DeepInfra key in `.env` and set `AI_PROVIDER=deepinfra`:
+
+```text
+AI_PROVIDER=deepinfra
+DEEPINFRA_API_KEY=your-real-deepinfra-key
+DEEPINFRA_MODEL=deepseek-ai/DeepSeek-V3
+```
+
+Never commit `.env`; it is ignored by git so real API keys stay local. `.env.example` is safe to commit because it contains no secret values.
+
+If `AI_PROVIDER` is not `deepinfra`, `DEEPINFRA_API_KEY` is missing, the key is a placeholder, or DeepInfra returns an error, Conci AI falls back to the existing local/mock intent and response behavior.
+
+You can test DeepInfra without starting the app:
+
+```bash
+export DEEPINFRA_API_KEY="your-real-deepinfra-key"
+python3 test_deepinfra.py
+```
+
+To use OpenAI for the legacy planner layer, put your real OpenAI API key in `.env`:
 
 ```text
 OPENAI_API_KEY=your-real-api-key
 OPENAI_MODEL=gpt-5.5
 ```
 
-Never commit `.env`; it is ignored by git so real API keys stay local. `.env.example` is safe to commit because it contains no secret values.
-
-If `OPENAI_API_KEY` is missing or left as the placeholder value, the app falls back to mock AI behavior.
+If `OPENAI_API_KEY` is missing or left as the placeholder value, the planning layer falls back to mock AI behavior.
 
 ### Mock AI mode
 
-By default, the app uses deterministic mock behavior. Leave `OPENAI_API_KEY` unset:
+By default, the app can run with deterministic mock behavior. Leave `DEEPINFRA_API_KEY` and `OPENAI_API_KEY` unset:
 
 ```bash
+unset DEEPINFRA_API_KEY
 unset OPENAI_API_KEY
 cd backend
 .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 In mock mode, the AI Admin Agent still returns a structured plan, but it is created locally with deterministic rules.
+
+### DeepInfra Conci AI mode
+
+Set `AI_PROVIDER=deepinfra` and `DEEPINFRA_API_KEY` to let Conci AI use DeepInfra's OpenAI-compatible chat completions endpoint for intent classification and answer refinement:
+
+```bash
+cp .env.example .env
+# edit .env:
+# AI_PROVIDER=deepinfra
+# DEEPINFRA_API_KEY="your-deepinfra-api-key"
+# DEEPINFRA_MODEL=deepseek-ai/DeepSeek-V3
+cd backend
+.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+Conci AI still applies backend role filters before creating an answer. DeepInfra receives the user's message for intent classification and only the already role-filtered answer/bullets for response cleanup. The backend keeps local intent priority guards for overlapping phrases, so requests like `show calendar events` are not mistaken for date questions even if an external classifier returns a weaker intent. If DeepInfra is unavailable or the key is missing, Conci AI falls back to the current local/mock behavior.
+
+Conci AI has a local intent-understanding fallback for demo mode. It normalizes messages, fixes common typos, uses recent chat topic context for follow-up clarifications, and supports natural-language requests such as `sho me recent tickets`, `show calender events`, `give me food vendor deatils`, `how many vendors do we have`, `what todays date`, `create tikcet for laptop issue`, pending approvals, vendor billing/details, inventory status/update questions, monthly or category-wise expenses, recent travel records, calendar events, and imported reports. The backend always filters tickets, tasks, vendors, inventory, expenses, travel/calendar, reports, approvals, and settings data by the logged-in user's role before an answer is built or any text is sent to DeepInfra.
 
 ### OpenAI planner mode
 
@@ -163,6 +199,9 @@ export USE_OPENAI_AI=true
 OPENAI_API_KEY       Optional. Enables OpenAI Responses API agent planning when set.
 OPENAI_MODEL         Optional. Defaults to gpt-5.5.
 USE_OPENAI_AI        Optional. Defaults to false. Enables the OpenAI transcript summary adapter.
+AI_PROVIDER          Optional. Set to deepinfra to enable DeepInfra for Conci AI.
+DEEPINFRA_API_KEY    Optional. Enables DeepInfra Conci AI mode when AI_PROVIDER=deepinfra and the key is non-placeholder.
+DEEPINFRA_MODEL      Optional. Defaults to deepseek-ai/DeepSeek-V3.
 ADMIN_AGENT_DB       Optional. SQLite database path. Defaults to backend/admin_agent.db.
 ```
 

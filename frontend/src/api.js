@@ -124,16 +124,22 @@ async function chatRequest(path, body) {
   return response.json();
 }
 
-export function askChatbot(message, file = null) {
+export function askChatbot(message, file = null, action = null, history = []) {
   if (file) {
     const formData = new FormData();
     formData.append("message", message || "");
+    if (action) {
+      formData.append("action", JSON.stringify(action));
+    }
+    if (history?.length) {
+      formData.append("history", JSON.stringify(history));
+    }
     formData.append("file", file, file.name || "attached-file");
     return chatRequest("/api/chat/assistant", formData);
   }
   return request("/api/chat/assistant", {
     method: "POST",
-    body: JSON.stringify({ message })
+    body: JSON.stringify({ message, ...(action ? { action } : {}), ...(history?.length ? { history } : {}) })
   });
 }
 
@@ -438,6 +444,18 @@ export function configureEmailConnector(payload) {
     method: "POST",
     body: JSON.stringify(payload)
   });
+}
+
+export function startGoogleEmailConnection() {
+  return request("/api/connectors/google/start");
+}
+
+export function disconnectGoogleEmail() {
+  return request("/api/connectors/google/disconnect", { method: "POST" });
+}
+
+export function testGoogleEmailConnector() {
+  return request("/api/connectors/google/test-email", { method: "POST" });
 }
 
 export function configureWhatsAppConnector(payload) {

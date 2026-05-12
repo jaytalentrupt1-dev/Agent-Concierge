@@ -6,13 +6,17 @@ import csv
 import io
 import json
 import re
+import secrets
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, RedirectResponse, Response
 
 from app.core.config import settings
 from app.data.mock_data import get_mock_context
@@ -57,6 +61,8 @@ from app.services.approval_rules import ApprovalRulesService
 from app.services.approval_service import ApprovalService
 from app.services.audit_service import AuditService
 from app.services.communication_service import CommunicationService
+from app.services.conci_agent import ConciAgentIntentService
+from app.services.deepinfra_service import get_deepinfra_client
 from app.services.auth_service import (
     AuthService,
     can_approve_request,
@@ -90,6 +96,9 @@ def create_app(database_path: str | None = None) -> FastAPI:
     approvals = ApprovalService(repository, audit, rules)
     auth = AuthService(repository, audit)
     communications = CommunicationService(repository, audit)
+    conci_agent = ConciAgentIntentService()
+    deepinfra_client = get_deepinfra_client(settings)
+    google_oauth_states: dict[str, dict] = {}
     ai = get_ai_service(settings)
     planner = get_agent_planner(settings)
     workflow = VendorReviewWorkflow(
@@ -168,6 +177,8 @@ def create_app(database_path: str | None = None) -> FastAPI:
 
     def email_connector_status(provider: str) -> str:
         normalized = provider.strip().lower()
+        if normalized == "gmail":
+            return "connected"
         if normalized == "mock email":
             return "mock_mode"
         if normalized == "smtp" and settings.smtp_host and settings.email_from_address:
@@ -175,6 +186,76 @@ def create_app(database_path: str | None = None) -> FastAPI:
         if normalized == "sendgrid" and settings.sendgrid_api_key and settings.email_from_address:
             return "connected"
         return "mock_mode"
+
+    def google_oauth_configured() -> bool:
+        return bool(settings.google_client_id and settings.google_client_secret and settings.google_redirect_uri)
+
+    def google_frontend_redirect(status: str, message: str = "") -> str:
+        base = (settings.frontend_url or "http://127.0.0.1:5173").rstrip("/")
+        params = {"gmail": status}
+        if message:
+            params["message"] = message[:160]
+        return f"{base}/settings?{urllib.parse.urlencode(params)}"
+
+    def public_connector(connector: dict) -> dict:
+        item = dict(connector or {})
+        config = dict(item.get("config") or {})
+        for key in [
+            "access_token",
+            "refresh_token",
+            "id_token",
+            "token",
+            "token_response",
+            "smtp_password",
+            "sendgrid_api_key",
+            "twilio_auth_token",
+            "whatsapp_cloud_api_access_token",
+            "google_oauth_state",
+        ]:
+            config.pop(key, None)
+        if str(item.get("provider", "")).lower() == "gmail":
+            config["has_google_access_token"] = bool((connector.get("config") or {}).get("access_token"))
+            config["has_google_refresh_token"] = bool((connector.get("config") or {}).get("refresh_token"))
+        item["config"] = config
+        return item
+
+    def google_oauth_authorization_url(state: str) -> str:
+        params = {
+            "client_id": settings.google_client_id,
+            "redirect_uri": settings.google_redirect_uri,
+            "response_type": "code",
+            "scope": "openid email profile https://www.googleapis.com/auth/gmail.send",
+            "access_type": "offline",
+            "prompt": "consent",
+            "state": state,
+        }
+        return f"https://accounts.google.com/o/oauth2/v2/auth?{urllib.parse.urlencode(params)}"
+
+    def google_exchange_code(code: str) -> dict:
+        data = urllib.parse.urlencode({
+            "code": code,
+            "client_id": settings.google_client_id,
+            "client_secret": settings.google_client_secret,
+            "redirect_uri": settings.google_redirect_uri,
+            "grant_type": "authorization_code",
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            "https://oauth2.googleapis.com/token",
+            data=data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def google_fetch_userinfo(access_token: str) -> dict:
+        request = urllib.request.Request(
+            "https://www.googleapis.com/oauth2/v2/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"},
+            method="GET",
+        )
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return json.loads(response.read().decode("utf-8"))
 
     def whatsapp_connector_status(provider: str) -> str:
         normalized = provider.strip().lower()
@@ -280,6 +361,13 @@ def create_app(database_path: str | None = None) -> FastAPI:
         if can_manage_it(user) and ticket.get("ticket_type") == "IT":
             return True
         if can_manage_finance(user) and is_finance_related_ticket(ticket):
+            return True
+        return False
+
+    def can_update_ticket_status(user: dict, ticket: dict) -> bool:
+        if can_view_all(user):
+            return True
+        if can_manage_it(user) and ticket.get("ticket_type") == "IT":
             return True
         return False
 
@@ -976,14 +1064,15 @@ def create_app(database_path: str | None = None) -> FastAPI:
     CHATBOT_STOPWORDS = {
         "a", "about", "all", "an", "and", "answer", "any", "are", "as", "ask", "at", "by", "can", "count",
         "current", "dashboard", "data", "details", "do", "find", "for", "from", "get", "give", "has", "have",
-        "help", "how", "i", "in", "info", "information", "is", "it", "list", "me", "monthly", "my", "of",
-        "month", "on", "open", "overview", "please", "recent", "show", "summary", "tell", "the", "this", "to",
-        "today", "total", "visible", "what", "which", "with", "you",
+        "earlier", "help", "history", "how", "i", "in", "info", "information", "is", "it", "list", "many", "me", "monthly", "my", "of",
+        "month", "not", "number", "older", "on", "open", "overview", "past", "please", "recent", "show", "summary", "talking",
+        "tell", "the", "this", "to", "today", "total", "visible", "want", "what", "which", "with", "you",
     }
     CHATBOT_DOMAIN_TERMS = {
-        "activity", "approval", "approvals", "asset", "assets", "billing", "calendar", "device", "devices",
-        "expense", "expenses", "inventory", "report", "reports", "request", "requests", "spend", "supplier",
-        "suppliers", "task", "tasks", "ticket", "tickets", "travel", "trip", "vendor", "vendors",
+        "activity", "approval", "approvals", "asset", "assets", "billing", "calendar", "calendars",
+        "device", "devices", "event", "events", "expense", "expenses", "inventory", "report", "reports",
+        "request", "requests", "spend", "supplier", "suppliers", "task", "tasks", "ticket", "tickets",
+        "travel", "trip", "vendor", "vendors",
     }
     CHATBOT_INTENT_PHRASES = {
         "recent_tickets": ["recent tickets", "latest tickets", "new tickets", "show recent tickets", "ticket history"],
@@ -993,10 +1082,12 @@ def create_app(database_path: str | None = None) -> FastAPI:
         "open_tasks": ["open tasks", "open task", "open task list", "pending tasks", "active tasks", "incomplete tasks"],
         "my_tasks": ["my tasks", "my task", "tasks assigned to me", "own tasks"],
         "vendor_billing": ["vendor billing", "vendor bills", "vendor payment", "supplier billing", "monthly vendor billing"],
+        "vendor_count": ["how many vendors", "vendor count", "count vendors", "number of vendors"],
         "active_vendors": ["active vendors", "current vendors", "vendor list", "show vendors", "active suppliers"],
         "inventory_summary": ["inventory summary", "inventory status", "stock summary", "device summary", "asset summary"],
         "expenses_this_month": ["expenses this month", "monthly expenses", "this month expenses", "expense this month"],
         "travel_spend": ["travel spend", "travel spending", "travel expense", "travel cost", "trip spend"],
+        "calendar_events": ["calendar events", "calendar event", "show calendar events", "show calender events", "meeting events"],
         "reports": ["reports", "show reports", "report list", "available reports"],
         "help": ["help", "what can you do", "how can you help", "commands", "suggestions"],
     }
@@ -1005,6 +1096,8 @@ def create_app(database_path: str | None = None) -> FastAPI:
         "aprovals": "approvals",
         "approvel": "approval",
         "approvels": "approvals",
+        "calender": "calendar",
+        "calenders": "calendars",
         "expence": "expense",
         "expences": "expenses",
         "inventry": "inventory",
@@ -1029,6 +1122,11 @@ def create_app(database_path: str | None = None) -> FastAPI:
         bullets: list[str] | None = None,
         source: str = "Agent Concierge data",
         table: dict | None = None,
+        next_question: str | None = None,
+        action_required: str | None = None,
+        confirmation_required: bool = False,
+        created_record_id: str | None = None,
+        action: dict | None = None,
     ) -> dict:
         cleaned_bullets = [str(item).strip() for item in (bullets or []) if str(item).strip()]
         payload = {
@@ -1039,6 +1137,16 @@ def create_app(database_path: str | None = None) -> FastAPI:
         }
         if table and table.get("columns") and table.get("rows"):
             payload["table"] = table
+        if next_question:
+            payload["next_question"] = next_question
+        if action_required:
+            payload["action_required"] = action_required
+        if confirmation_required:
+            payload["confirmation_required"] = True
+        if created_record_id:
+            payload["created_record_id"] = created_record_id
+        if action:
+            payload["action"] = action
         return payload
 
     def chatbot_denied() -> dict:
@@ -1224,66 +1332,168 @@ def create_app(database_path: str | None = None) -> FastAPI:
         return any(term in text for term in terms)
 
     def chatbot_normalize_input(value: str) -> str:
-        text = str(value or "").lower().strip()
-        text = re.sub(r"[^a-z0-9@\s._-]", " ", text)
-        text = re.sub(r"\s+", " ", text).strip()
-        for typo, replacement in CHATBOT_COMMON_TYPOS.items():
-            text = re.sub(rf"\b{re.escape(typo)}\b", replacement, text)
-        return re.sub(r"\s+", " ", text).strip()
+        return conci_agent.normalize(value)
 
     def chatbot_similarity(left: str, right: str) -> float:
         return SequenceMatcher(None, left, right).ratio()
 
     def chatbot_local_intent(text: str) -> str:
-        normalized = chatbot_normalize_input(text)
-        if not normalized:
-            return ""
-        if chatbot_casual_response(normalized):
-            return "casual"
+        result = conci_agent.classify(text)
+        return "" if result.intent == "unsupported" else result.intent
 
-        best_intent = ""
-        best_score = 0.0
-        normalized_tokens = set(normalized.split())
-        for intent, phrases in CHATBOT_INTENT_PHRASES.items():
-            for phrase in phrases:
-                normalized_phrase = chatbot_normalize_input(phrase)
-                phrase_tokens = set(normalized_phrase.split())
-                token_score = (
-                    len(normalized_tokens.intersection(phrase_tokens)) / len(phrase_tokens)
-                    if phrase_tokens else 0.0
-                )
-                sequence_score = chatbot_similarity(normalized, normalized_phrase)
-                score = max(token_score, sequence_score)
-                if normalized_phrase in normalized:
-                    score = max(score, 1.0)
-                if score > best_score:
-                    best_score = score
-                    best_intent = intent
-        return best_intent if best_score >= 0.68 else ""
-
-    def chatbot_openai_intent(text: str) -> str:
+    def chatbot_external_intent_result(text: str) -> dict:
+        allowed = conci_agent.intent_ids()
+        if deepinfra_client:
+            try:
+                return deepinfra_client.classify_intent(text, allowed)
+            except Exception:
+                return {}
         if not (settings.use_openai_ai and settings.openai_api_key):
-            return ""
+            return {}
         try:
             from openai import OpenAI
 
-            allowed = sorted(CHATBOT_INTENT_PHRASES.keys())
             client = OpenAI(api_key=settings.openai_api_key)
             prompt = (
-                "Classify this Conci AI user message into one intent. "
-                "Return only one of these intent ids, or unknown. "
-                f"Intent ids: {', '.join(allowed)}.\n"
+                "Classify this Conci AI user message into structured JSON. "
+                "Use only the allowed intent ids. Do not answer the user. "
+                "Return strict JSON with keys: intent, confidence, entities, "
+                "required_role_scope, action_type, missing_fields, confirmation_required. "
+                f"Allowed intent ids: {', '.join(allowed)}. Use unsupported when unsure.\n"
                 f"Message: {text}"
             )
             response = client.responses.create(model=settings.openai_model, input=prompt)
-            intent = str(getattr(response, "output_text", "") or "").strip().lower()
-            return intent if intent in CHATBOT_INTENT_PHRASES else ""
+            parsed = json.loads(str(getattr(response, "output_text", "") or "").strip())
+            if not isinstance(parsed, dict):
+                return {}
+            intent = str(parsed.get("intent") or "").strip().lower()
+            if intent not in allowed:
+                return {}
+            return parsed
         except Exception:
-            return ""
+            return {}
 
-    def chatbot_detect_intent(message: str) -> tuple[str, str]:
+    def chatbot_history_topic(history: list[dict] | None) -> str:
+        if not isinstance(history, list):
+            return ""
+        for item in reversed(history[-8:]):
+            if not isinstance(item, dict):
+                continue
+            text = chatbot_normalize_input(f"{item.get('text') or ''} {item.get('source') or ''}")
+            if "ticket" in text or "tickets" in text:
+                return "tickets"
+            if "inventory" in text or "device" in text or "devices" in text:
+                return "inventory"
+            if "vendor" in text or "vendors" in text:
+                return "vendors"
+            if "task" in text or "tasks" in text:
+                return "tasks"
+            if "expense" in text or "expenses" in text:
+                return "expenses"
+            if "travel" in text or "trip" in text:
+                return "travel"
+            if "calendar" in text or "event" in text or "events" in text:
+                return "calendar"
+            if "approval" in text or "approvals" in text:
+                return "approvals"
+        return ""
+
+    def chatbot_contextual_intent(normalized: str, history: list[dict] | None) -> str:
+        topic = chatbot_history_topic(history)
+        if not topic:
+            return ""
+        has_explicit_domain = any(
+            token in normalized
+            for token in [
+                "ticket", "tickets", "inventory", "device", "devices", "vendor", "vendors", "task", "tasks",
+                "expense", "expenses", "travel", "trip", "calendar", "event", "events", "approval",
+                "approvals", "report", "reports",
+            ]
+        )
+        is_clarification = any(
+            phrase in normalized
+            for phrase in [
+                "not talking", "i want", "earlier history", "earlier", "older", "previous", "past", "history",
+                "that history", "show history", "show earlier", "show older",
+            ]
+        )
+        if has_explicit_domain or not is_clarification:
+            return ""
+        if topic == "tickets":
+            return "recent_tickets"
+        if topic == "inventory":
+            return "inventory_recent_updates"
+        if topic == "vendors":
+            return "vendor_details"
+        if topic == "tasks":
+            return "open_tasks"
+        if topic == "expenses":
+            return "expenses_by_month"
+        if topic == "travel":
+            return "travel_recent_records"
+        if topic == "calendar":
+            return "calendar_events"
+        if topic == "approvals":
+            return "pending_approvals"
+        return ""
+
+    def chatbot_priority_local_intent(normalized: str) -> str:
+        """Guard obvious app intents from a bad external classifier result.
+
+        DeepInfra/OpenAI can still help with natural wording, but overlapping
+        words such as "calendar" and "date" should not let a single word
+        override the user's full request.
+        """
+        local = conci_agent.classify(normalized)
+        high_priority_intents = {
+            "calendar_events",
+            "recent_tickets",
+            "open_tickets",
+            "my_tickets",
+            "create_ticket",
+            "ticket_status",
+            "ticket_status_update",
+            "vendor_billing",
+            "vendor_count",
+            "vendor_details",
+            "active_vendors",
+            "inventory_recent_updates",
+            "inventory_summary",
+            "inventory_in_use",
+            "inventory_submitted_vendor",
+            "expenses_by_month",
+            "expenses_by_category",
+            "expenses_last_month",
+            "expenses_this_month",
+            "pending_expenses",
+            "travel_spend",
+            "travel_recent_records",
+            "pending_approvals",
+            "reports",
+            "utility_date",
+            "utility_time",
+        }
+        if local.intent in high_priority_intents and float(local.confidence or 0) >= 0.78:
+            return local.intent
+        return ""
+
+    def chatbot_detect_intent(message: str, history: list[dict] | None = None) -> tuple[str, str, dict]:
         normalized = chatbot_normalize_input(message)
-        return normalized, chatbot_openai_intent(normalized) or chatbot_local_intent(normalized)
+        contextual_intent = chatbot_contextual_intent(normalized, history)
+        if contextual_intent:
+            intent_result = conci_agent.classify(normalized, openai_intent=contextual_intent)
+            return normalized, contextual_intent, intent_result.to_dict()
+        openai_result = chatbot_external_intent_result(normalized)
+        priority_intent = chatbot_priority_local_intent(normalized)
+        external_intent = str(openai_result.get("intent") or "") if openai_result else None
+        if priority_intent:
+            external_intent = priority_intent
+        intent_result = conci_agent.classify(
+            normalized,
+            openai_intent=external_intent,
+            openai_entities=openai_result.get("entities") if isinstance(openai_result.get("entities"), dict) else None,
+        )
+        return normalized, "" if intent_result.intent == "unsupported" else intent_result.intent, intent_result.to_dict()
 
     def chatbot_role_label(role: str) -> str:
         return {
@@ -1397,14 +1607,15 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 return str(value).strip()
         return "-"
 
-    def chatbot_vendor_table(vendors: list[dict], include_billing: bool = False, limit: int = 6) -> dict:
+    def chatbot_vendor_table(vendors: list[dict], include_billing: bool = False, limit: int | None = None) -> dict:
+        visible_vendors = vendors if limit is None else vendors[:limit]
         columns = ["Vendor Name", "Service", "Contact", "Phone", "Status"]
         if include_billing:
             columns.insert(4, "Billing")
-        if any(vendor.get("end_date") for vendor in vendors[:limit]):
+        if any(vendor.get("end_date") for vendor in visible_vendors):
             columns.insert(-1, "End Date")
         rows = []
-        for vendor in vendors[:limit]:
+        for vendor in visible_vendors:
             row = {
                 "Vendor Name": vendor.get("vendor_name") or "-",
                 "Service": vendor.get("service_provided") or "-",
@@ -1421,6 +1632,21 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 row["End Date"] = chatbot_date(vendor.get("end_date")) or "-"
             rows.append(row)
         return {"columns": columns, "rows": rows}
+
+    def chatbot_requested_vendor_limit(text: str, intent_result: dict, total: int, default_limit: int = 10) -> tuple[int, bool]:
+        entities = intent_result.get("entities") if isinstance(intent_result.get("entities"), dict) else {}
+        requested_limit = entities.get("limit")
+        try:
+            requested_limit = int(requested_limit)
+        except (TypeError, ValueError):
+            requested_limit = None
+        if requested_limit and requested_limit > 0:
+            return min(requested_limit, total), True
+        if chatbot_has_any(text, ["all vendors", "all vendor", "every vendor", "complete vendor", "full vendor"]):
+            return total, True
+        if chatbot_has_any(text, ["details", "detail", "list all", "show all"]):
+            return total, True
+        return min(default_limit, total), False
 
     def chatbot_vendor_billing_bullets(rows: list[dict], limit: int = 6) -> list[str]:
         return [
@@ -1589,10 +1815,716 @@ def create_app(database_path: str | None = None) -> FastAPI:
             selected = [record for record in selected if record.get("approval_status") == "Completed"]
         return chatbot_filter_by_terms(selected, text, ["travel_id", "employee_name", "department", "destination_from", "destination_to", "purpose", "approval_status"])
 
-    def chatbot_openai_refine(question: str, response: dict) -> dict | None:
-        if not (settings.use_openai_ai and settings.openai_api_key):
+    def chatbot_ticket_table(tickets: list[dict], limit: int = 6) -> dict:
+        return {
+            "columns": ["Ticket ID", "Title", "Type", "Status", "Priority", "Due Date"],
+            "rows": [
+                {
+                    "Ticket ID": ticket.get("ticket_id") or "-",
+                    "Title": ticket.get("title") or "-",
+                    "Type": ticket.get("ticket_type") or "-",
+                    "Status": ticket.get("status") or "-",
+                    "Priority": ticket.get("priority") or "-",
+                    "Due Date": chatbot_date(ticket.get("due_date")) or "-",
+                }
+                for ticket in tickets[:limit]
+            ],
+        }
+
+    def chatbot_inventory_table(items: list[dict], limit: int = 5) -> dict:
+        return {
+            "columns": ["Employee Name", "Serial No.", "Model No.", "Status", "Location", "Updated"],
+            "rows": [
+                {
+                    "Employee Name": item.get("employee_name") or item.get("assigned_to") or "-",
+                    "Serial No.": item.get("serial_no") or item.get("serial_number") or "-",
+                    "Model No.": item.get("model_no") or item.get("model") or "-",
+                    "Status": item.get("status") or "-",
+                    "Location": item.get("location") or "-",
+                    "Updated": chatbot_date(item.get("updated_at")) or chatbot_date(item.get("created_at")) or "-",
+                }
+                for item in items[:limit]
+            ],
+        }
+
+    def chatbot_task_table(tasks: list[dict], limit: int = 8) -> dict:
+        return {
+            "columns": ["Task", "Owner", "Status", "Priority", "Due Date"],
+            "rows": [
+                {
+                    "Task": task.get("title") or task.get("task_id") or "-",
+                    "Owner": task.get("assigned_to") or task.get("assigned_role") or "-",
+                    "Status": task.get("status") or "-",
+                    "Priority": task.get("priority") or "-",
+                    "Due Date": chatbot_date(task.get("due_date")) or "-",
+                }
+                for task in tasks[:limit]
+            ],
+        }
+
+    def chatbot_expense_table(expenses: list[dict], limit: int = 8) -> dict:
+        return {
+            "columns": ["Expense", "Category", "Amount", "Status", "Date"],
+            "rows": [
+                {
+                    "Expense": expense.get("expense_id") or expense.get("vendor_or_merchant") or "-",
+                    "Category": expense.get("category") or "-",
+                    "Amount": chatbot_money(expense.get("amount")),
+                    "Status": expense.get("status") or "-",
+                    "Date": chatbot_date(expense.get("expense_date")) or "-",
+                }
+                for expense in expenses[:limit]
+            ],
+        }
+
+    def chatbot_travel_table(records: list[dict], limit: int = 8) -> dict:
+        return {
+            "columns": ["Travel ID", "Employee", "Route", "Status", "Spend", "Start"],
+            "rows": [
+                {
+                    "Travel ID": record.get("travel_id") or "-",
+                    "Employee": record.get("employee_name") or "-",
+                    "Route": f"{record.get('destination_from') or '-'} to {record.get('destination_to') or '-'}",
+                    "Status": record.get("approval_status") or "-",
+                    "Spend": chatbot_money(record.get("actual_spend")),
+                    "Start": chatbot_date(record.get("travel_start_date")) or "-",
+                }
+                for record in records[:limit]
+            ],
+        }
+
+    def chatbot_calendar_table(events: list[dict], limit: int = 8) -> dict:
+        return {
+            "columns": ["Event ID", "Title", "Type", "Start", "End", "Location", "Status"],
+            "rows": [
+                {
+                    "Event ID": event.get("event_id") or "-",
+                    "Title": event.get("title") or "-",
+                    "Type": event.get("event_type") or "-",
+                    "Start": chatbot_date(event.get("start_datetime")) or "-",
+                    "End": chatbot_date(event.get("end_datetime")) or "-",
+                    "Location": event.get("location") or "-",
+                    "Status": event.get("status") or "-",
+                }
+                for event in events[:limit]
+            ],
+        }
+
+    def chatbot_report_table(reports: list[dict], limit: int = 8) -> dict:
+        return {
+            "columns": ["Report ID", "Report Name", "Type", "Department", "Status"],
+            "rows": [
+                {
+                    "Report ID": report.get("report_id") or "-",
+                    "Report Name": report.get("report_name") or "-",
+                    "Type": report.get("report_type") or "-",
+                    "Department": report.get("department") or "-",
+                    "Status": report.get("status") or "-",
+                }
+                for report in reports[:limit]
+            ],
+        }
+
+    def chatbot_month_label(month_key: str) -> str:
+        try:
+            return datetime.strptime(month_key, "%Y-%m").strftime("%b %Y")
+        except ValueError:
+            return month_key
+
+    def chatbot_expense_month_table(expenses: list[dict]) -> dict:
+        totals: dict[str, dict] = {}
+        for expense in expenses:
+            month_key = str(expense.get("expense_date") or "")[:7] or "Unknown"
+            if month_key not in totals:
+                totals[month_key] = {"total": 0.0, "count": 0}
+            totals[month_key]["total"] += float(expense.get("amount") or 0)
+            totals[month_key]["count"] += 1
+        rows = [
+            {
+                "Month": chatbot_month_label(month_key),
+                "Total": chatbot_money(values["total"]),
+                "Expenses": values["count"],
+            }
+            for month_key, values in sorted(totals.items())
+        ]
+        return {"columns": ["Month", "Total", "Expenses"], "rows": rows}
+
+    def chatbot_expense_category_table(expenses: list[dict]) -> dict:
+        totals: dict[str, dict] = {}
+        for expense in expenses:
+            category = str(expense.get("category") or "Miscellaneous")
+            if category not in totals:
+                totals[category] = {"total": 0.0, "count": 0}
+            totals[category]["total"] += float(expense.get("amount") or 0)
+            totals[category]["count"] += 1
+        rows = [
+            {"Category": category, "Total": chatbot_money(values["total"]), "Expenses": values["count"]}
+            for category, values in sorted(totals.items(), key=lambda item: item[1]["total"], reverse=True)
+        ]
+        return {"columns": ["Category", "Total", "Expenses"], "rows": rows}
+
+    def chatbot_previous_month_prefix() -> str:
+        today = chatbot_local_now()
+        year = today.year
+        month = today.month - 1
+        if month == 0:
+            month = 12
+            year -= 1
+        return f"{year:04d}-{month:02d}"
+
+    def chatbot_local_now() -> datetime:
+        try:
+            return datetime.now(ZoneInfo("Asia/Kolkata"))
+        except Exception:
+            return datetime.now(timezone.utc)
+
+    def chatbot_date_response() -> dict:
+        today = chatbot_local_now()
+        return chatbot_response(
+            f"Today's date is {today.strftime('%d/%m/%Y')}.",
+            source="Date and time",
+        )
+
+    def chatbot_time_response() -> dict:
+        now = chatbot_local_now()
+        return chatbot_response(
+            f"The current time is {now.strftime('%I:%M %p')} IST.",
+            source="Date and time",
+        )
+
+    def chatbot_title_from_issue(text: str) -> str:
+        cleaned = re.sub(r"\b(create|raise|open|ticket|for me|please)\b", " ", text, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+        if not cleaned:
+            return ""
+        replacements = {
+            "my laptop is not working": "Laptop not working",
+            "laptop is not working": "Laptop not working",
+            "printer not working": "Printer not working",
+            "password reset": "Password reset",
+        }
+        normalized = cleaned.lower()
+        return replacements.get(normalized, cleaned[:1].upper() + cleaned[1:])
+
+    def chatbot_infer_ticket_payload(user: dict, raw_text: str, text: str) -> tuple[dict, list[str]]:
+        missing: list[str] = []
+        ticket_type = "IT" if chatbot_has_any(text, ["it", "laptop", "password", "printer", "software", "device", "vpn", "login", "access"]) else "Admin"
+        if user["role"] == "it_manager":
+            ticket_type = "IT"
+        category = "Other"
+        if chatbot_has_any(text, ["password", "login"]):
+            category = "Password"
+        elif chatbot_has_any(text, ["software", "access", "vpn"]):
+            category = "Software Access"
+        elif "printer" in text:
+            category = "Printer"
+        elif chatbot_has_any(text, ["laptop", "device", "hardware"]):
+            category = "Device"
+        elif "vendor" in text:
+            category = "Vendor"
+        elif "invoice" in text or "payment" in text or "expense" in text:
+            category = "Finance"
+        title = chatbot_title_from_issue(raw_text)
+        weak_create_request = not title or title.lower() in {"create", "create ticket", "ticket"}
+        if weak_create_request or len(chatbot_query_terms(text)) <= 2:
+            missing.extend(["ticket type", "category", "title", "description", "priority"])
+        priority = "Critical" if "critical" in text else "High" if "urgent" in text or "high" in text else "Low" if "low" in text else "Medium"
+        payload = {
+            "ticket_type": ticket_type,
+            "title": title or "New ticket request",
+            "description": raw_text.strip() or title or "Created from Conci AI chat.",
+            "category": category,
+            "priority": priority,
+            "status": "Open",
+            "due_date": None,
+            "approval_required": False,
+        }
+        return payload, missing
+
+    def chatbot_create_ticket_from_text(user: dict, raw_text: str, text: str) -> dict:
+        payload, missing = chatbot_infer_ticket_payload(user, raw_text, text)
+        if missing:
+            return chatbot_response(
+                "I can create that ticket. I need a few details first.",
+                [
+                    "Ticket type: IT or Admin",
+                    "Category",
+                    "Title",
+                    "Description",
+                    "Priority: Low, Medium, High, or Critical",
+                    "Due date is optional",
+                ],
+                source="Ticket agent",
+                next_question="Please share the ticket type, category, title, description, and priority.",
+                action_required="ticket_details",
+            )
+        if user["role"] == "it_manager" and payload["ticket_type"] != "IT":
+            return chatbot_denied()
+        assignment = ticket_assignment(payload["ticket_type"], payload["category"])
+        ticket = repository.add_ticket(
+            {
+                **payload,
+                **assignment,
+                "requester_user_id": user["id"],
+                "requester_name": user["name"],
+                "requester_email": user["email"],
+                "requester_role": user["role"],
+            }
+        )
+        audit.record(
+            "ticket.created",
+            "completed",
+            actor=user["email"],
+            approval_required=ticket["approval_required"],
+            details={
+                "ticket_id": ticket["ticket_id"],
+                "ticket_type": ticket["ticket_type"],
+                "category": ticket["category"],
+                "assigned_role": ticket["assigned_role"],
+                "actor_user_id": user["id"],
+                "actor_role": user["role"],
+                "source": "conci_ai",
+            },
+        )
+        create_ticket_notification(ticket, "ticket.created", "New ticket created", f"New ticket created: {ticket['title']}")
+        return chatbot_response(
+            f"Created ticket {ticket['ticket_id']} with status {ticket['status']}.",
+            [
+                f"Title: {ticket['title']}",
+                f"Type: {ticket['ticket_type']}",
+                f"Category: {ticket['category']}",
+                f"Assigned to: {chatbot_role_label(ticket.get('assigned_role', ''))}",
+            ],
+            source="Ticket agent",
+            table=chatbot_ticket_table([ticket], 1),
+            created_record_id=ticket["ticket_id"],
+        )
+
+    def chatbot_ticket_status_response(user: dict, text: str, tickets: list[dict]) -> dict:
+        ticket_id_match = re.search(r"\b(?:IT|ADM)-\d+\b", text, flags=re.IGNORECASE)
+        if ticket_id_match:
+            wanted = ticket_id_match.group(0).upper()
+            match = next((ticket for ticket in tickets if str(ticket.get("ticket_id", "")).upper() == wanted), None)
+            if not match:
+                return chatbot_response("I could not find that ticket for your access level.", source="Tickets")
+            return chatbot_response(
+                f"{match['ticket_id']} is currently {match['status']}.",
+                chatbot_ticket_bullets([match], 1),
+                source="Tickets",
+                table=chatbot_ticket_table([match], 1),
+            )
+        pending = [
+            ticket for ticket in tickets
+            if ticket.get("status") not in {"Resolved", "Closed"}
+            or ticket.get("approval_required")
+        ]
+        if not pending:
+            return chatbot_empty_message("You don’t have any open tickets right now.", "Tickets")
+        return chatbot_response(
+            "Here are the latest open or pending tickets:",
+            [],
+            source="Tickets",
+            table=chatbot_ticket_table(pending, 6),
+        )
+
+    def chatbot_requested_ticket_status(text: str) -> str:
+        if chatbot_has_any(text, ["resolve", "resolved"]):
+            return "Resolved"
+        if chatbot_has_any(text, ["close", "closed"]):
+            return "Closed"
+        if chatbot_has_any(text, ["in progress", "progress"]):
+            return "In Progress"
+        if chatbot_has_any(text, ["waiting approval", "waiting", "pending approval"]):
+            return "Waiting Approval"
+        if "open" in text:
+            return "Open"
+        return ""
+
+    def chatbot_update_ticket_status_from_text(user: dict, text: str, tickets: list[dict]) -> dict | None:
+        ticket_id_match = re.search(r"\b(?:IT|ADM)-\d+\b", text, flags=re.IGNORECASE)
+        requested_status = chatbot_requested_ticket_status(text)
+        if not ticket_id_match or not requested_status:
             return None
+        wanted = ticket_id_match.group(0).upper()
+        ticket = next((item for item in tickets if str(item.get("ticket_id", "")).upper() == wanted), None)
+        if not ticket:
+            return chatbot_response("I could not find that ticket for your access level.", source="Tickets")
+        if not can_update_ticket_status(user, ticket):
+            return chatbot_denied()
+        return chatbot_response(
+            f"Please confirm updating {ticket['ticket_id']} from {ticket['status']} to {requested_status}.",
+            [
+                f"Ticket: {ticket['title']}",
+                f"Current status: {ticket['status']}",
+                f"New status: {requested_status}",
+            ],
+            source="Ticket agent",
+            table=chatbot_ticket_table([ticket], 1),
+            confirmation_required=True,
+            action={
+                "type": "update_ticket_status",
+                "payload": {
+                    "ticket_id": ticket["ticket_id"],
+                    "status": requested_status,
+                },
+            },
+        )
+
+    def chatbot_agent_task_payload(user: dict, raw_text: str, text: str) -> tuple[dict, list[str]]:
+        title = chatbot_title_from_issue(raw_text.replace("task", ""))
+        if not title or len(chatbot_query_terms(text)) <= 3:
+            return {}, ["title", "description", "category", "department", "assignee", "priority"]
+        if user["role"] == "it_manager":
+            category = "IT"
+            department = "IT"
+            assigned_role = "it_manager"
+        elif user["role"] == "finance_manager":
+            category = "Finance"
+            department = "Finance"
+            assigned_role = "finance_manager"
+        elif user["role"] == "employee":
+            category = "Admin"
+            department = "Admin"
+            assigned_role = user["role"]
+        else:
+            category = "Admin"
+            department = "Admin"
+            assigned_role = "admin"
+        return {
+            "title": title,
+            "description": raw_text.strip(),
+            "category": category,
+            "department": department,
+            "assigned_to": user["name"],
+            "assigned_user_id": user["id"],
+            "assigned_email": user["email"],
+            "assigned_role": assigned_role,
+            "priority": "High" if "urgent" in text or "high" in text else "Medium",
+            "status": "Open",
+            "due_date": None,
+            "notes": "Created from Conci AI chat.",
+        }, []
+
+    def chatbot_create_task_from_text(user: dict, raw_text: str, text: str) -> dict:
+        payload, missing = chatbot_agent_task_payload(user, raw_text, text)
+        if missing:
+            return chatbot_response(
+                "I can create that task request. I need a few details first.",
+                ["Title", "Description", "Category", "Department", "Assignee", "Priority"],
+                source="Task agent",
+                next_question="Please share the task title, description, department, assignee, and priority.",
+                action_required="task_details",
+            )
+        task_request = TaskRequest.model_validate(payload)
+        task = repository.add_task(resolved_task_payload_for_user(task_request, user))
+        create_task_assignment_notification(task, user)
+        audit.record(
+            "task.created",
+            "completed",
+            actor=user["email"],
+            details={
+                "task_id": task["task_id"],
+                "category": task["category"],
+                "department": task["department"],
+                "actor_user_id": user["id"],
+                "actor_role": user["role"],
+                "source": "conci_ai",
+            },
+        )
+        return chatbot_response(
+            f"Created task {task['task_id']} with status {task['status']}.",
+            chatbot_task_bullets([task], 1),
+            source="Task agent",
+            created_record_id=task["task_id"],
+        )
+
+    def chatbot_agent_response_for(user: dict, raw_text: str, text: str, detected_intent: str, intent_result: dict, tickets: list[dict], tasks: list[dict], inventory_items: list[dict], expenses: list[dict], travel_records: list[dict]) -> dict | None:
+        intent = detected_intent or str(intent_result.get("intent") or "")
+        wants_create = str(intent_result.get("action_type") or "") == "create"
+        if intent == "create_ticket" or (wants_create and "ticket" in text):
+            return chatbot_create_ticket_from_text(user, raw_text, text)
+        if intent == "create_task" or (wants_create and "task" in text):
+            return chatbot_create_task_from_text(user, raw_text, text)
+        if intent == "create_vendor" or (wants_create and "vendor" in text):
+            if not can_view_all(user):
+                return chatbot_denied()
+            return chatbot_response(
+                "I can help add a vendor. I need the full vendor details before creating it.",
+                [
+                    "Vendor name",
+                    "Contact person",
+                    "Email",
+                    "Phone/contact details",
+                    "Office address",
+                    "Service",
+                    "Start date",
+                    "Billing amount and cycle",
+                ],
+                source="Vendor agent",
+                next_question="Please share the vendor contact, service, start date, billing amount, and billing cycle.",
+                action_required="vendor_details",
+            )
+        ticket_status_update = chatbot_update_ticket_status_from_text(user, text, tickets) if intent == "ticket_status_update" else None
+        if ticket_status_update:
+            return ticket_status_update
+        if intent == "ticket_status_update":
+            return chatbot_response(
+                "I can update that ticket status. Which ticket ID should I update?",
+                ["Example: Resolve ticket IT-1001"],
+                source="Ticket agent",
+                next_question="Please share the ticket ID and the new status.",
+                action_required="ticket_status_update_details",
+            )
+        if intent == "ticket_status":
+            return chatbot_ticket_status_response(user, text, tickets)
+
+        if intent == "inventory_recent_updates":
+            if not (can_view_all(user) or can_manage_it(user)):
+                return chatbot_denied()
+            limit = min(max(int(intent_result.get("entities", {}).get("limit") or 5), 1), 10)
+            sorted_items = sorted(
+                inventory_items,
+                key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""),
+                reverse=True,
+            )[:limit]
+            if not sorted_items:
+                return chatbot_empty_message("No inventory items found for that request.", "Inventory")
+            return chatbot_response(
+                f"Here are the last {limit} inventory updates:",
+                [],
+                source="Inventory",
+                table=chatbot_inventory_table(sorted_items, limit),
+            )
+
+        if intent in {"inventory_in_use", "inventory_submitted_vendor"}:
+            if not (can_view_all(user) or can_manage_it(user) or can_manage_finance(user)):
+                return chatbot_denied()
+            selected_items = chatbot_select_inventory(inventory_items, text)
+            if not selected_items:
+                return chatbot_empty_message("No inventory items found for that request.", "Inventory")
+            return chatbot_response(
+                f"{len(selected_items)} inventory items match your request.",
+                [],
+                source="Inventory",
+                table=chatbot_inventory_table(selected_items, min(len(selected_items), 20)),
+            )
+
+        if intent == "overdue_tasks":
+            overdue = chatbot_overdue_tasks(tasks)
+            if not overdue:
+                return chatbot_empty_message("You don’t have any overdue tasks right now.", "Tasks")
+            return chatbot_response(
+                f"{len(overdue)} overdue tasks match your access level.",
+                [],
+                source="Tasks",
+                table=chatbot_task_table(overdue, min(len(overdue), 20)),
+            )
+
+        if intent == "expenses_by_month":
+            if not (can_view_all(user) or can_manage_finance(user)):
+                return chatbot_denied()
+            if not expenses:
+                return chatbot_empty_message("No expenses found for that request.", "Expenses")
+            return chatbot_response(
+                "Here are the month-wise expense totals:",
+                [],
+                source="Expenses",
+                table=chatbot_expense_month_table(expenses),
+            )
+
+        if intent == "expenses_by_category":
+            if not (can_view_all(user) or can_manage_finance(user)):
+                return chatbot_denied()
+            if not expenses:
+                return chatbot_empty_message("No expenses found for that request.", "Expenses")
+            return chatbot_response(
+                "Here are expenses by category:",
+                [],
+                source="Expenses",
+                table=chatbot_expense_category_table(expenses),
+            )
+
+        if intent == "pending_expenses":
+            if not (can_view_all(user) or can_manage_finance(user)):
+                return chatbot_denied()
+            pending_expenses = chatbot_select_expenses(expenses, "pending expenses")
+            if not pending_expenses:
+                return chatbot_empty_message("No expenses found for that request.", "Expenses")
+            return chatbot_response(
+                f"{len(pending_expenses)} expenses are pending or need attention.",
+                [],
+                source="Expenses",
+                table=chatbot_expense_table(pending_expenses, min(len(pending_expenses), 20)),
+            )
+
+        if intent == "expenses_last_month":
+            if not (can_view_all(user) or can_manage_finance(user)):
+                return chatbot_denied()
+            month_prefix = chatbot_previous_month_prefix()
+            last_month_expenses = [
+                expense for expense in expenses
+                if str(expense.get("expense_date") or "").startswith(month_prefix)
+            ]
+            if not last_month_expenses:
+                return chatbot_empty_message("No expenses found for that request.", "Expenses")
+            total = currency_total(last_month_expenses, "amount")
+            return chatbot_response(
+                f"Last month expenses totaled {chatbot_money(total)}.",
+                chatbot_group_sum(last_month_expenses, "category", "amount", 5) or chatbot_expense_bullets(last_month_expenses, 5),
+                source="Expenses",
+            )
+
+        if intent == "travel_spend" and intent_result.get("entities", {}).get("date_range") == "last_month":
+            if not (can_view_all(user) or can_manage_finance(user)):
+                return chatbot_denied()
+            month_prefix = chatbot_previous_month_prefix()
+            last_month_records = [record for record in travel_records if str(record.get("travel_start_date") or "").startswith(month_prefix)]
+            total = currency_total(last_month_records, "actual_spend")
+            if not last_month_records:
+                return chatbot_response(
+                    f"Last month travel spend was {chatbot_money(0)}.",
+                    source="Travel",
+                )
+            return chatbot_response(
+                f"Last month travel spend was {chatbot_money(total)}.",
+                chatbot_travel_bullets(last_month_records, 5),
+                source="Travel",
+            )
+
+        if intent == "travel_recent_records":
+            if not (can_view_all(user) or can_manage_finance(user)):
+                return chatbot_denied()
+            sorted_records = sorted(travel_records, key=lambda record: str(record.get("created_at") or record.get("travel_start_date") or ""), reverse=True)
+            if not sorted_records:
+                return chatbot_no_data("Travel")
+            return chatbot_response(
+                "Here are recent travel records:",
+                [],
+                source="Travel",
+                table=chatbot_travel_table(sorted_records, min(len(sorted_records), 10)),
+            )
+
+        return None
+
+    def chatbot_execute_confirmed_action(user: dict, action: dict | None) -> dict | None:
+        if not isinstance(action, dict) or not action.get("type"):
+            return None
+        action_type = str(action.get("type") or "")
+        payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+        if action_type == "create_ticket":
+            ticket_request = TicketCreateRequest.model_validate(payload)
+            if user["role"] == "it_manager" and ticket_request.ticket_type != "IT":
+                return chatbot_denied()
+            assignment = ticket_assignment(ticket_request.ticket_type, ticket_request.category)
+            ticket = repository.add_ticket(
+                {
+                    **ticket_request.model_dump(),
+                    **assignment,
+                    "requester_user_id": user["id"],
+                    "requester_name": user["name"],
+                    "requester_email": user["email"],
+                    "requester_role": user["role"],
+                }
+            )
+            audit.record(
+                "ticket.created",
+                "completed",
+                actor=user["email"],
+                approval_required=ticket["approval_required"],
+                details={
+                    "ticket_id": ticket["ticket_id"],
+                    "ticket_type": ticket["ticket_type"],
+                    "category": ticket["category"],
+                    "actor_user_id": user["id"],
+                    "actor_role": user["role"],
+                    "source": "conci_ai_confirmed_action",
+                },
+            )
+            create_ticket_notification(ticket, "ticket.created", "New ticket created", f"New ticket created: {ticket['title']}")
+            return chatbot_response(
+                f"Confirmed and created ticket {ticket['ticket_id']}.",
+                chatbot_ticket_bullets([ticket], 1),
+                source="Ticket agent",
+                table=chatbot_ticket_table([ticket], 1),
+                created_record_id=ticket["ticket_id"],
+            )
+        if action_type == "create_task":
+            task_request = TaskRequest.model_validate(payload)
+            task = repository.add_task(resolved_task_payload_for_user(task_request, user))
+            create_task_assignment_notification(task, user)
+            audit.record(
+                "task.created",
+                "completed",
+                actor=user["email"],
+                details={
+                    "task_id": task["task_id"],
+                    "category": task["category"],
+                    "department": task["department"],
+                    "actor_user_id": user["id"],
+                    "actor_role": user["role"],
+                    "source": "conci_ai_confirmed_action",
+                },
+            )
+            return chatbot_response(
+                f"Confirmed and created task {task['task_id']}.",
+                chatbot_task_bullets([task], 1),
+                source="Task agent",
+                created_record_id=task["task_id"],
+            )
+        if action_type == "update_ticket_status":
+            ticket_id = str(payload.get("ticket_id") or "").upper()
+            requested_status = str(payload.get("status") or "")
+            if requested_status not in {"Open", "In Progress", "Waiting Approval", "Resolved", "Closed"}:
+                return chatbot_response("That ticket status is not valid.", source="Ticket agent")
+            tickets = visible_tickets_for(user)
+            ticket = next((item for item in tickets if str(item.get("ticket_id", "")).upper() == ticket_id), None)
+            if not ticket:
+                return chatbot_response("I could not find that ticket for your access level.", source="Tickets")
+            if not can_update_ticket_status(user, ticket):
+                return chatbot_denied()
+            updated = repository.update_ticket_status(ticket["id"], requested_status)
+            audit.record(
+                "ticket.status_changed",
+                "completed",
+                actor=user["email"],
+                approval_required=updated["approval_required"],
+                details={
+                    "ticket_id": updated["ticket_id"],
+                    "ticket_type": updated["ticket_type"],
+                    "status": updated["status"],
+                    "actor_user_id": user["id"],
+                    "actor_role": user["role"],
+                    "source": "conci_ai_confirmed_action",
+                },
+            )
+            if updated["status"] != ticket["status"]:
+                create_ticket_status_notification(updated)
+            return chatbot_response(
+                f"Confirmed and updated {updated['ticket_id']} to {updated['status']}.",
+                chatbot_ticket_bullets([updated], 1),
+                source="Ticket agent",
+                table=chatbot_ticket_table([updated], 1),
+                created_record_id=updated["ticket_id"],
+            )
+        return chatbot_response("I cannot perform that action.", source="Conci AI")
+
+    def chatbot_external_refine(question: str, response: dict) -> dict | None:
         if response.get("answer") in {CHATBOT_ACCESS_DENIED, CHATBOT_EMPTY_RESPONSE}:
+            return None
+        if deepinfra_client:
+            try:
+                parsed = deepinfra_client.refine_response(question, response)
+                answer = str(parsed.get("answer") or response.get("answer") or "").strip()
+                bullets = parsed.get("bullets") if isinstance(parsed.get("bullets"), list) else response.get("bullets", [])
+                return chatbot_response(
+                    answer,
+                    [str(item) for item in bullets],
+                    source=f"{response.get('source', 'Agent Concierge data')} · DeepInfra",
+                    table=response.get("table"),
+                )
+            except Exception:
+                return None
+        if not (settings.use_openai_ai and settings.openai_api_key):
             return None
         try:
             from openai import OpenAI
@@ -1678,7 +2610,10 @@ def create_app(database_path: str | None = None) -> FastAPI:
             return chatbot_response("You’re welcome.", source="Conci AI")
         return None
 
-    def chatbot_answer_for(user: dict, message: str) -> dict:
+    def chatbot_answer_for(user: dict, message: str, action: dict | None = None, history: list[dict] | None = None) -> dict:
+        action_response = chatbot_execute_confirmed_action(user, action)
+        if action_response:
+            return action_response
         role = user["role"]
         raw_text = message.strip().lower()
         if not raw_text:
@@ -1687,7 +2622,12 @@ def create_app(database_path: str | None = None) -> FastAPI:
         casual_response = chatbot_casual_response(raw_text)
         if casual_response:
             return casual_response
-        text, detected_intent = chatbot_detect_intent(raw_text)
+        text, detected_intent, intent_result = chatbot_detect_intent(raw_text, history)
+
+        if detected_intent == "utility_date":
+            return chatbot_date_response()
+        if detected_intent == "utility_time":
+            return chatbot_time_response()
 
         tickets = visible_tickets_for(user)
         tasks = visible_tasks_for(user)
@@ -1703,19 +2643,34 @@ def create_app(database_path: str | None = None) -> FastAPI:
         calendar_events = repository.list_calendar_events() if can_view_finance else []
         vendor_dashboard = vendor_billing_dashboard_for(user)
 
+        agent_response = chatbot_agent_response_for(
+            user,
+            message.strip(),
+            text,
+            detected_intent,
+            intent_result,
+            tickets,
+            tasks,
+            inventory_items,
+            expenses,
+            travel_records,
+        )
+        if agent_response:
+            return agent_response
+
         if detected_intent == "help":
             return chatbot_response(
                 "I can help you check tickets, tasks, vendors, inventory, expenses, travel, reports, approvals, and dashboard summaries based on your access.",
                 source="Conci AI",
             )
 
-        asks_user_data = chatbot_has_any(text, ["user", "users", "setting", "settings", "account", "role"])
-        asks_vendor = detected_intent in {"vendor_billing", "active_vendors"} or chatbot_has_any(text, ["vendor", "vendors", "supplier", "suppliers", "billing", "bill"])
-        asks_expense = detected_intent == "expenses_this_month" or chatbot_has_any(text, ["expense", "expenses", "spend", "reimbursement", "receipt", "merchant"])
-        asks_travel = detected_intent == "travel_spend" or chatbot_has_any(text, ["travel", "trip", "calendar", "event"])
+        asks_user_data = detected_intent == "users_settings" or chatbot_has_any(text, ["user", "users", "setting", "settings", "account", "role"])
+        asks_vendor = detected_intent in {"vendor_billing", "vendor_count", "active_vendors", "vendor_details"} or chatbot_has_any(text, ["vendor", "vendors", "supplier", "suppliers", "billing", "bill"])
+        asks_expense = detected_intent in {"expenses_this_month", "expenses_by_month", "expenses_last_month", "expenses_by_category", "pending_expenses"} or chatbot_has_any(text, ["expense", "expenses", "spend", "reimbursement", "receipt", "merchant"])
+        asks_travel = detected_intent in {"travel_spend", "travel_recent_records", "calendar_events"} or chatbot_has_any(text, ["travel", "trip", "calendar", "event"])
         asks_ticket = detected_intent in {"recent_tickets", "open_tickets", "my_tickets"} or chatbot_has_any(text, ["ticket", "tickets"])
-        asks_task = detected_intent in {"open_tasks", "my_tasks"} or chatbot_has_any(text, ["task", "tasks"])
-        asks_inventory = detected_intent == "inventory_summary" or chatbot_has_any(text, ["inventory", "stock", "device", "devices", "asset", "assets", "laptop"])
+        asks_task = detected_intent in {"open_tasks", "my_tasks", "overdue_tasks"} or chatbot_has_any(text, ["task", "tasks"])
+        asks_inventory = detected_intent in {"inventory_summary", "inventory_in_use", "inventory_submitted_vendor"} or chatbot_has_any(text, ["inventory", "stock", "device", "devices", "asset", "assets", "laptop"])
         asks_report = detected_intent == "reports" or chatbot_has_any(text, ["report", "reports"])
         asks_approval = detected_intent == "pending_approvals" or chatbot_has_any(text, ["approval", "approvals", "pending request", "pending requests", "waiting"])
         asks_activity = chatbot_has_any(text, ["activity", "audit", "recent"])
@@ -1745,7 +2700,15 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 vendors = vendor_dashboard.get("current_vendors", []) if vendor_dashboard else []
                 billing_rows = vendor_dashboard.get("current_billing", {}).get("rows", []) if vendor_dashboard else []
                 expected_rows = vendor_dashboard.get("expected_billing", []) if vendor_dashboard else []
-                if "highest" in text and billing_rows:
+                if detected_intent == "vendor_count":
+                    selected_vendors = chatbot_filter_by_terms(vendors, text, ["vendor_name", "service_provided", "status"])
+                    service_label = " food" if "food" in text else ""
+                    response = chatbot_response(
+                        f"You have {len(selected_vendors)} active{service_label} vendors visible for your access level.",
+                        chatbot_status_counts(selected_vendors),
+                        source="Vendors",
+                    )
+                elif "highest" in text and billing_rows:
                     highest = sorted(billing_rows, key=lambda row: float(row.get("monthly_equivalent") or 0), reverse=True)[0]
                     response = chatbot_response(
                         f"{highest.get('vendor_name')} has the highest monthly equivalent billing at {chatbot_money(highest.get('monthly_equivalent'))}.",
@@ -1775,7 +2738,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
                         f"Total current monthly equivalent vendor billing is {chatbot_money(total)}.",
                         chatbot_vendor_billing_bullets(billing_rows, 6),
                         source="Vendor billing",
-                        table=chatbot_vendor_billing_table(billing_rows, 6),
+                        table=chatbot_vendor_billing_table(billing_rows, min(len(billing_rows), 20)),
                     ) if billing_rows else chatbot_empty_message("No vendors found for that request.", "Vendor billing")
                 elif "closing" in text:
                     closing = vendor_dashboard.get("closing_soon", []) if vendor_dashboard else []
@@ -1787,12 +2750,31 @@ def create_app(database_path: str | None = None) -> FastAPI:
                     ) if closing else chatbot_empty_message("No vendors found for that request.", "Vendors closing soon")
                 else:
                     selected_vendors = chatbot_filter_by_terms(vendors, text, ["vendor_name", "service_provided", "status"])
-                    response = chatbot_response(
-                        f"{len(selected_vendors)} active vendors match your access level.",
-                        chatbot_vendor_bullets(selected_vendors, include_billing=True, limit=6),
-                        source="Vendors",
-                        table=chatbot_vendor_table(selected_vendors, include_billing=True, limit=6),
-                    ) if selected_vendors else chatbot_empty_message("No vendors found for that request.", "Vendors")
+                    if not selected_vendors:
+                        if "food" in text:
+                            response = chatbot_empty_message("No food vendors found.", "Vendors")
+                        else:
+                            response = chatbot_empty_message("No vendors found for that request.", "Vendors")
+                    else:
+                        vendor_limit, explicit_vendor_limit = chatbot_requested_vendor_limit(text, intent_result, len(selected_vendors))
+                        detail_prefix = ""
+                        if "food" in text:
+                            detail_prefix = "food "
+                        if explicit_vendor_limit:
+                            if vendor_limit >= len(selected_vendors):
+                                answer = f"I found {len(selected_vendors)} {detail_prefix}vendors. Here are the details."
+                            else:
+                                answer = f"I found {len(selected_vendors)} {detail_prefix}vendors. Here are the first {vendor_limit} requested details."
+                        else:
+                            answer = f"I found {len(selected_vendors)} {detail_prefix}vendors. Here are the details."
+                            if len(selected_vendors) > vendor_limit:
+                                answer = f"I found {len(selected_vendors)} {detail_prefix}vendors. Showing first {vendor_limit}. Ask for a number, like “show 26 vendors”, to see more."
+                        response = chatbot_response(
+                            answer,
+                            [],
+                            source="Vendors",
+                            table=chatbot_vendor_table(selected_vendors, include_billing=True, limit=vendor_limit),
+                        )
 
         elif asks_expense:
             if not can_view_finance:
@@ -1809,18 +2791,20 @@ def create_app(database_path: str | None = None) -> FastAPI:
                         f"{timeframe.title()} expenses total {chatbot_money(total)}; {pending} need attention.",
                         chatbot_group_sum(selected_expenses, "category", "amount", 5) or chatbot_expense_bullets(selected_expenses, 5),
                         source="Expenses",
+                        table=chatbot_expense_table(selected_expenses, min(len(selected_expenses), 12)),
                     )
 
         elif asks_travel:
             if not can_view_finance:
                 response = chatbot_denied()
-            elif "calendar" in text or "event" in text:
+            elif detected_intent == "calendar_events" or "calendar" in text or "event" in text:
                 selected_events = chatbot_filter_by_terms(calendar_events, text, ["event_id", "title", "event_type", "location", "attendees", "status"])
                 response = chatbot_response(
-                    f"{len(selected_events)} calendar events match your access level.",
-                    chatbot_calendar_bullets(selected_events, 6),
+                    "Here are calendar events:",
+                    [],
                     source="Calendar events",
-                ) if selected_events else chatbot_no_data("Calendar events")
+                    table=chatbot_calendar_table(selected_events, min(len(selected_events), 12)),
+                ) if selected_events else chatbot_empty_message("No calendar events found for your access level.", "Calendar events")
             else:
                 selected_travel = chatbot_select_travel(travel_records, text)
                 if not selected_travel:
@@ -1831,6 +2815,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
                         f"{len(selected_travel)} travel records match your access level with total spend {chatbot_money(total_spend)}.",
                         chatbot_travel_bullets(selected_travel, 6),
                         source="Travel",
+                        table=chatbot_travel_table(selected_travel, min(len(selected_travel), 12)),
                     )
 
         elif asks_ticket:
@@ -1841,21 +2826,33 @@ def create_app(database_path: str | None = None) -> FastAPI:
             else:
                 if detected_intent == "my_tickets":
                     selected_tickets = [ticket for ticket in tickets if ticket.get("requester_user_id") == user["id"]]
+                elif detected_intent == "recent_tickets" and chatbot_has_any(text, ["history", "earlier", "older", "past"]):
+                    selected_tickets = tickets
                 else:
                     selected_tickets = chatbot_select_tickets(tickets, text)
                 if not selected_tickets:
-                    response = chatbot_empty_message("You don’t have any open tickets right now.", "Tickets")
+                    if detected_intent == "recent_tickets" or chatbot_has_any(text, ["history", "earlier", "older", "past"]):
+                        response = chatbot_empty_message("I could not find ticket history for your account.", "Tickets")
+                    else:
+                        response = chatbot_empty_message("You don’t have any open tickets right now.", "Tickets")
                 elif detected_intent == "recent_tickets":
+                    ticket_history_answer = (
+                        "Here is your ticket history:"
+                        if chatbot_has_any(text, ["history", "earlier", "older", "past"])
+                        else "Here are recent tickets:"
+                    )
                     response = chatbot_response(
-                        "Here are recent tickets:",
+                        ticket_history_answer,
                         chatbot_ticket_bullets(selected_tickets, 6),
                         source="Tickets",
+                        table=chatbot_ticket_table(selected_tickets, min(len(selected_tickets), 12)),
                     )
                 elif detected_intent == "my_tickets":
                     response = chatbot_response(
                         "Here are your tickets:",
                         chatbot_ticket_bullets(selected_tickets, 6),
                         source="Tickets",
+                        table=chatbot_ticket_table(selected_tickets, min(len(selected_tickets), 12)),
                     )
                 else:
                     open_tickets = [ticket for ticket in selected_tickets if ticket.get("status") not in {"Resolved", "Closed"}]
@@ -1864,6 +2861,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
                         f"{len(open_tickets)} open {owner} tickets; {len(selected_tickets)} tickets match your question.",
                         chatbot_ticket_bullets(selected_tickets, 6),
                         source="Tickets",
+                        table=chatbot_ticket_table(selected_tickets, min(len(selected_tickets), 12)),
                     )
 
         elif asks_task:
@@ -1883,6 +2881,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
                         "Here are your tasks:",
                         chatbot_task_bullets(selected_tasks, 6),
                         source="Tasks",
+                        table=chatbot_task_table(selected_tasks, min(len(selected_tasks), 12)),
                     )
                 else:
                     open_tasks = [task for task in selected_tasks if task.get("status") not in {"Completed", "Cancelled"}]
@@ -1891,6 +2890,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
                         f"{len(open_tasks)} open {owner} tasks; {len(selected_tasks)} tasks match your question.",
                         chatbot_task_bullets(selected_tasks, 6),
                         source="Tasks",
+                        table=chatbot_task_table(selected_tasks, min(len(selected_tasks), 12)),
                     )
 
         elif asks_inventory:
@@ -1905,6 +2905,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
                         f"{len(selected_inventory)} inventory items match your question.",
                         chatbot_status_counts(selected_inventory) + chatbot_inventory_bullets(selected_inventory, 6),
                         source="Inventory",
+                        table=chatbot_inventory_table(selected_inventory, min(len(selected_inventory), 12)),
                     )
 
         elif asks_report:
@@ -1916,6 +2917,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
                     f"{len(selected_reports)} reports are visible for your role.",
                     chatbot_report_bullets(selected_reports, 6),
                     source="Reports",
+                    table=chatbot_report_table(selected_reports, min(len(selected_reports), 12)),
                 ) if selected_reports else chatbot_no_data("Reports")
 
         elif asks_approval:
@@ -1960,7 +2962,13 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 source="Conci AI",
             )
 
-        refined_response = chatbot_openai_refine(message, response)
+        if (
+            response.get("source") == "Vendors"
+            and response.get("table")
+        ):
+            return response
+
+        refined_response = chatbot_external_refine(message, response)
         if refined_response and response.get("table"):
             refined_response["table"] = response["table"]
         return refined_response or response
@@ -2081,7 +3089,13 @@ def create_app(database_path: str | None = None) -> FastAPI:
 
     @app.get("/api/health")
     def health() -> dict:
-        return {"status": "ok", "ai_mode": ai.mode, "agent_planner_mode": planner.mode}
+        return {
+            "status": "ok",
+            "ai_mode": ai.mode,
+            "agent_planner_mode": planner.mode,
+            "ai_provider": settings.ai_provider,
+            "conci_ai_provider": deepinfra_client.mode if deepinfra_client else "local_conci_ai",
+        }
 
     @app.post("/api/auth/login")
     def login(payload: LoginRequest) -> dict:
@@ -2242,7 +3256,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
 
     @app.post("/api/chatbot/ask")
     def ask_chatbot(payload: ChatbotRequest, user: dict = Depends(current_user)) -> dict:
-        response = chatbot_answer_for(user, payload.message)
+        response = chatbot_answer_for(user, payload.message, history=payload.history)
         return {
             "answer": response["answer"],
             "bullets": response["bullets"],
@@ -2257,6 +3271,19 @@ def create_app(database_path: str | None = None) -> FastAPI:
         if content_type.lower().startswith("multipart/form-data"):
             fields, files = parse_simple_multipart(content_type, await request.body())
             message = fields.get("message", "")
+            action = None
+            if fields.get("action"):
+                try:
+                    action = json.loads(fields["action"])
+                except json.JSONDecodeError:
+                    action = None
+            history = []
+            if fields.get("history"):
+                try:
+                    parsed_history = json.loads(fields["history"])
+                    history = parsed_history if isinstance(parsed_history, list) else []
+                except json.JSONDecodeError:
+                    history = []
             uploaded_file = files.get("file")
             response = (
                 chatbot_answer_for_file(
@@ -2267,12 +3294,12 @@ def create_app(database_path: str | None = None) -> FastAPI:
                     uploaded_file.get("content_type", ""),
                 )
                 if uploaded_file
-                else chatbot_answer_for(user, message)
+                else chatbot_answer_for(user, message, action, history)
             )
         else:
             payload_data = await request.json()
             payload = ChatbotRequest.model_validate(payload_data)
-            response = chatbot_answer_for(user, payload.message)
+            response = chatbot_answer_for(user, payload.message, payload_data.get("action"), payload.history)
         return {
             "answer": response["answer"],
             "bullets": response["bullets"],
@@ -2284,9 +3311,104 @@ def create_app(database_path: str | None = None) -> FastAPI:
     @app.get("/api/connectors")
     def list_connectors(user: dict = Depends(current_user)) -> dict:
         return {
-            "connectors": repository.list_connectors(user["id"]),
+            "connectors": [public_connector(connector) for connector in repository.list_connectors(user["id"])],
             "message_templates": repository.list_message_templates(),
+            "google_email_configured": google_oauth_configured(),
         }
+
+    @app.get("/api/connectors/google/start")
+    def start_google_connector(user: dict = Depends(current_user)) -> dict:
+        if not google_oauth_configured():
+            return {
+                "configured": False,
+                "message": "Google email connection is not configured yet.",
+            }
+        state = secrets.token_urlsafe(32)
+        google_oauth_states[state] = {
+            "user_id": user["id"],
+            "user_email": user["email"],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        audit.record(
+            "connector.google.oauth_started",
+            "pending",
+            actor=user["email"],
+            details={"actor_user_id": user["id"], "actor_role": user["role"]},
+        )
+        return {
+            "configured": True,
+            "authorization_url": google_oauth_authorization_url(state),
+            "message": "Redirecting to Google",
+        }
+
+    @app.get("/api/connectors/google/callback")
+    def google_connector_callback(
+        code: str | None = Query(default=None),
+        state: str | None = Query(default=None),
+        error: str | None = Query(default=None),
+    ):
+        if error:
+            return RedirectResponse(google_frontend_redirect("error", error))
+        if not code or not state:
+            return RedirectResponse(google_frontend_redirect("error", "Missing Google OAuth response."))
+        oauth_state = google_oauth_states.pop(state, None)
+        if not oauth_state:
+            return RedirectResponse(google_frontend_redirect("error", "Google OAuth session expired. Please try again."))
+        try:
+            token_response = google_exchange_code(code)
+            access_token = str(token_response.get("access_token") or "")
+            if not access_token:
+                raise ValueError("Google did not return an access token")
+            userinfo = google_fetch_userinfo(access_token)
+            connected_email = str(userinfo.get("email") or oauth_state.get("user_email") or "").strip()
+            connected_at = datetime.now(timezone.utc).isoformat()
+            config = {
+                "connected_email": connected_email,
+                "google_user_id": str(userinfo.get("id") or ""),
+                "connected_at": connected_at,
+                "scope": token_response.get("scope", ""),
+                "token_type": token_response.get("token_type", ""),
+                "expires_in": token_response.get("expires_in", ""),
+                "access_token": access_token,
+                "refresh_token": token_response.get("refresh_token", ""),
+                "id_token": token_response.get("id_token", ""),
+                "secrets_source": "Google OAuth",
+            }
+            repository.upsert_connector(oauth_state["user_id"], "email", "Gmail", "connected", "Email", config, connected_at)
+            audit.record(
+                "connector.google.connected",
+                "connected",
+                actor=oauth_state.get("user_email", ""),
+                details={
+                    "actor_user_id": oauth_state["user_id"],
+                    "connected_email": connected_email,
+                    "provider": "Gmail",
+                },
+            )
+            return RedirectResponse(google_frontend_redirect("connected"))
+        except Exception as exc:
+            audit.record(
+                "connector.google.connect_failed",
+                "failed",
+                actor=oauth_state.get("user_email", ""),
+                details={"actor_user_id": oauth_state.get("user_id"), "error": str(exc)},
+            )
+            return RedirectResponse(google_frontend_redirect("error", "Could not connect Gmail. Please try again."))
+
+    @app.post("/api/connectors/google/disconnect")
+    def disconnect_google_connector(user: dict = Depends(current_user)) -> dict:
+        connector = repository.disconnect_connector(user["id"], "email")
+        audit.record(
+            "connector.google.disconnected",
+            "not_connected",
+            actor=user["email"],
+            details={"actor_user_id": user["id"], "actor_role": user["role"]},
+        )
+        return {"connector": public_connector(connector)}
+
+    @app.post("/api/connectors/google/test-email")
+    def test_google_email_connector(user: dict = Depends(current_user)) -> dict:
+        return test_email_connector(user)
 
     @app.post("/api/connectors/email/configure")
     def configure_email_connector(payload: EmailConnectorConfigRequest, user: dict = Depends(current_user)) -> dict:
@@ -2310,7 +3432,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
             actor=user["email"],
             details={"provider": provider, "actor_user_id": user["id"], "actor_role": user["role"]},
         )
-        return {"connector": connector}
+        return {"connector": public_connector(connector)}
 
     @app.post("/api/connectors/whatsapp/configure")
     def configure_whatsapp_connector(payload: WhatsAppConnectorConfigRequest, user: dict = Depends(current_user)) -> dict:
@@ -2333,11 +3455,13 @@ def create_app(database_path: str | None = None) -> FastAPI:
             actor=user["email"],
             details={"provider": provider, "actor_user_id": user["id"], "actor_role": user["role"]},
         )
-        return {"connector": connector}
+        return {"connector": public_connector(connector)}
 
     @app.post("/api/connectors/email/test")
     def test_email_connector(user: dict = Depends(current_user)) -> dict:
         connector = repository.get_connector("email", user["id"])
+        if google_oauth_configured() and (connector.get("provider") != "Gmail" or connector.get("status") != "connected"):
+            raise HTTPException(status_code=400, detail="Please connect your email in Settings first.")
         payload = {
             "recipient_name": user["name"],
             "recipient_email": user["email"],
@@ -2350,7 +3474,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
         }
         logs = communications.send(user, payload, ["email"])
         connector = repository.upsert_connector(user["id"], "email", connector["provider"], connector["status"], "Email", connector.get("config", {}), datetime.now(timezone.utc).isoformat())
-        return {"connector": connector, "logs": logs, "message": "Email connector test completed"}
+        return {"connector": public_connector(connector), "logs": logs, "message": "Email connector test completed"}
 
     @app.post("/api/connectors/whatsapp/test")
     def test_whatsapp_connector(user: dict = Depends(current_user)) -> dict:
@@ -2368,7 +3492,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
         }
         logs = communications.send(user, payload, ["whatsapp"])
         connector = repository.upsert_connector(user["id"], "whatsapp", connector["provider"], connector["status"], "WhatsApp", connector.get("config", {}), datetime.now(timezone.utc).isoformat())
-        return {"connector": connector, "logs": logs, "message": "WhatsApp connector test completed"}
+        return {"connector": public_connector(connector), "logs": logs, "message": "WhatsApp connector test completed"}
 
     @app.post("/api/connectors/disconnect")
     def disconnect_connector(payload: ConnectorDisconnectRequest, user: dict = Depends(current_user)) -> dict:
@@ -2379,7 +3503,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
             actor=user["email"],
             details={"actor_user_id": user["id"], "actor_role": user["role"]},
         )
-        return {"connector": connector}
+        return {"connector": public_connector(connector)}
 
     @app.get("/api/communications/logs")
     def communication_logs(user: dict = Depends(current_user)) -> dict:
@@ -2396,6 +3520,10 @@ def create_app(database_path: str | None = None) -> FastAPI:
         channels = ["email", "whatsapp"] if channel == "both" else [channel]
         if "email" in channels and not payload_data.get("recipient_email"):
             raise HTTPException(status_code=400, detail="Recipient email is required for email messages")
+        if "email" in channels and google_oauth_configured():
+            email_connector = repository.get_connector("email", user["id"])
+            if email_connector.get("provider") != "Gmail" or email_connector.get("status") != "connected":
+                raise HTTPException(status_code=400, detail="Please connect your email in Settings first.")
         if "whatsapp" in channels and not payload_data.get("recipient_phone"):
             raise HTTPException(status_code=400, detail="Recipient phone is required for WhatsApp messages")
         logs = communications.send(user, payload_data, channels)
@@ -2615,6 +3743,8 @@ def create_app(database_path: str | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Ticket not found")
         if not can_manage_ticket(user, existing):
             raise HTTPException(status_code=403, detail="Ticket management not permitted")
+        if payload.status != existing["status"] and not can_update_ticket_status(user, existing):
+            raise HTTPException(status_code=403, detail="Ticket status update not permitted")
         previous_status = existing["status"]
         assignment = ticket_assignment(payload.ticket_type, payload.category)
         ticket = repository.update_ticket(
@@ -2649,8 +3779,8 @@ def create_app(database_path: str | None = None) -> FastAPI:
         existing = repository.get_ticket(ticket_id)
         if not existing:
             raise HTTPException(status_code=404, detail="Ticket not found")
-        if not can_manage_ticket(user, existing):
-            raise HTTPException(status_code=403, detail="Ticket management not permitted")
+        if not can_update_ticket_status(user, existing):
+            raise HTTPException(status_code=403, detail="Ticket status update not permitted")
         ticket = repository.update_ticket_status(ticket_id, payload.status)
         audit.record(
             "ticket.status_changed",

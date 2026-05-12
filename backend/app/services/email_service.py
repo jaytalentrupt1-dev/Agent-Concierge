@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import smtplib
+import base64
 import urllib.request
 from email.message import EmailMessage
 from typing import Any
@@ -12,7 +13,7 @@ from app.core.config import settings
 class EmailService:
     def provider_from_connector(self, connector: dict | None = None) -> str:
         configured = str((connector or {}).get("provider") or settings.email_provider or "mock").strip()
-        if configured.lower() in {"smtp", "sendgrid", "mock email"}:
+        if configured.lower() in {"smtp", "sendgrid", "mock email", "gmail"}:
             return configured
         return "Mock Email" if configured.lower() == "mock" else configured
 
@@ -22,10 +23,14 @@ class EmailService:
             return bool(settings.smtp_host and settings.email_from_address)
         if normalized == "sendgrid":
             return bool(settings.sendgrid_api_key and settings.email_from_address)
+        if normalized == "gmail":
+            return True
         return False
 
     def send(self, payload: dict[str, Any], connector: dict | None = None) -> dict:
         provider = self.provider_from_connector(connector)
+        if provider.strip().lower() == "gmail":
+            return self._send_gmail(payload, provider, connector)
         if not self.is_configured(provider):
             return {
                 "channel": "email",
@@ -84,3 +89,37 @@ class EmailService:
             return {"channel": "email", "provider": provider, "status": status, "error_message": "", "metadata": {"mode": "sendgrid"}}
         except Exception as exc:
             return {"channel": "email", "provider": provider, "status": "failed", "error_message": str(exc), "metadata": {"mode": "sendgrid"}}
+
+    def _send_gmail(self, payload: dict[str, Any], provider: str, connector: dict | None = None) -> dict:
+        config = (connector or {}).get("config", {}) or {}
+        access_token = str(config.get("access_token") or "")
+        sender = str(config.get("connected_email") or settings.email_from_address or "").strip()
+        if not access_token:
+            return {
+                "channel": "email",
+                "provider": provider,
+                "status": "failed",
+                "error_message": "Please connect your email in Settings first.",
+                "metadata": {"mode": "gmail"},
+            }
+        try:
+            message = EmailMessage()
+            message["From"] = sender or "me"
+            message["To"] = payload.get("recipient_email", "")
+            message["Subject"] = payload.get("subject") or "Agent Concierge message"
+            message.set_content(payload.get("message_body", ""))
+            raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
+            request = urllib.request.Request(
+                "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+                data=json.dumps({"raw": raw_message}).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=15) as response:
+                status = "sent" if 200 <= int(response.status) < 300 else "failed"
+            return {"channel": "email", "provider": provider, "status": status, "error_message": "", "metadata": {"mode": "gmail", "from": sender}}
+        except Exception as exc:
+            return {"channel": "email", "provider": provider, "status": "failed", "error_message": str(exc), "metadata": {"mode": "gmail", "from": sender}}

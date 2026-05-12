@@ -25,6 +25,7 @@ import {
   Pencil,
   Plane,
   Plus,
+  Plug,
   RefreshCw,
   Search,
   Send,
@@ -42,16 +43,17 @@ import {
   MapPin,
   Maximize2,
   Minimize2,
+  MessageCircle,
   Phone,
   Paperclip,
   Trash2,
-  UserRound
+  UserRound,
+  UsersRound
 } from "lucide-react";
 import {
   askChatbot,
   closeVendor,
   bulkDeleteInventoryItems,
-  configureEmailConnector,
   configureWhatsAppConnector,
   confirmExpenseImport,
   createCalendarEvent,
@@ -67,6 +69,7 @@ import {
   deleteReport,
   deleteTask,
   disconnectConnector,
+  disconnectGoogleEmail,
   deleteInventoryImport,
   deleteInventoryItem,
   downloadReport,
@@ -106,7 +109,8 @@ import {
   runCommand,
   sendCommunication,
   setAuthToken,
-  testEmailConnector,
+  startGoogleEmailConnection,
+  testGoogleEmailConnector,
   testWhatsAppConnector,
   updateApproval,
   updateExpense,
@@ -898,6 +902,7 @@ function App() {
   const [command, setCommand] = useState(DEFAULT_COMMAND);
   const automationInputRef = useRef(null);
   const routingInputRef = useRef(null);
+  const accountMenuRef = useRef(null);
   const [theme, setTheme] = useState(savedTheme);
   const [currentUser, setCurrentUser] = useState(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
@@ -1177,6 +1182,29 @@ function App() {
     setTheme((current) => (current === "dark" ? "light" : "dark"));
   }
 
+  useEffect(() => {
+    if (!accountOpen) return undefined;
+
+    function handlePointerDown(event) {
+      if (accountMenuRef.current && !accountMenuRef.current.contains(event.target)) {
+        setAccountOpen(false);
+      }
+    }
+
+    function handleKeyDown(event) {
+      if (event.key === "Escape") {
+        setAccountOpen(false);
+      }
+    }
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [accountOpen]);
+
   function handleSearchSubmit(event) {
     event.preventDefault();
     const normalized = search.trim().toLowerCase();
@@ -1393,7 +1421,7 @@ function App() {
               <span className={theme === "dark" ? "active" : ""}><Moon size={17} /></span>
             </button>
             <div className="utility-divider" aria-hidden="true" />
-            <div className="account-wrap">
+            <div className="account-wrap" ref={accountMenuRef}>
               <button
                 aria-expanded={accountOpen}
                 aria-label="Open user account menu"
@@ -1423,9 +1451,8 @@ function App() {
                       <strong>{currentUser.name}</strong>
                       <span>{currentUser.email}</span>
                     </div>
-                    <span className="role-badge">{roleLabel(currentUser.role)}</span>
                   </div>
-                  <button className="account-logout" onClick={handleLogout} type="button">
+                  <button className="account-menu-item account-logout" onClick={handleLogout} type="button">
                     <LogOut size={18} />
                     <span>Logout</span>
                   </button>
@@ -2017,9 +2044,11 @@ function DashboardAIAssistantPanel({
   async function sendMessage(messageText, options = {}) {
     const cleanMessage = messageText.trim();
     const selectedAttachment = options.attachment || attachedFile;
-    if ((!cleanMessage && !selectedAttachment) || sending) return;
+    const action = options.action || null;
+    if ((!cleanMessage && !selectedAttachment && !action) || sending) return;
     const now = new Date();
     const requestId = `chat-${Date.now()}`;
+    const history = dashboardAssistantHistoryPayload(messages);
     onMessagesChange((current) => [
       ...current,
       {
@@ -2031,10 +2060,11 @@ function DashboardAIAssistantPanel({
         time: formatAssistantTime(now)
       }
     ]);
+    onDraftChange((currentDraft) => (currentDraft.trim() === cleanMessage ? "" : currentDraft));
 
     setSending(true);
     try {
-      const response = await askChatbot(cleanMessage, selectedAttachment?.file || null);
+      const response = await askChatbot(cleanMessage, selectedAttachment?.file || null, action, history);
       const reply = response.response || response || {};
       onMessagesChange((current) => [
         ...current,
@@ -2046,10 +2076,14 @@ function DashboardAIAssistantPanel({
           bullets: reply.bullets || response.bullets || [],
           table: reply.table || response.table || null,
           source: reply.source || response.source,
+          nextQuestion: reply.next_question || "",
+          actionRequired: reply.action_required || "",
+          confirmationRequired: Boolean(reply.confirmation_required),
+          action: reply.action || null,
+          createdRecordId: reply.created_record_id || "",
           time: formatAssistantTime(new Date())
         }
       ]);
-      onDraftChange((currentDraft) => (currentDraft.trim() === cleanMessage ? "" : currentDraft));
       if (selectedAttachment) {
         onAttachmentChange(null);
         if (fileInputRef.current) fileInputRef.current.value = "";
@@ -2076,6 +2110,7 @@ function DashboardAIAssistantPanel({
     const selectedAttachment = attachedFile;
     if (!editingMessage || (!cleanMessage && !selectedAttachment) || sending) return;
     const requestId = editingMessage.requestId || `chat-edit-${Date.now()}`;
+    const history = dashboardAssistantHistoryPayload(messages.filter((message) => message.id !== editingMessage.id));
     const updatedUserMessage = {
       ...editingMessage.originalMessage,
       requestId,
@@ -2085,10 +2120,11 @@ function DashboardAIAssistantPanel({
       time: formatAssistantTime(new Date())
     };
     onMessagesChange((current) => replaceEditedChatMessage(current, editingMessage, updatedUserMessage));
+    onDraftChange((currentDraft) => (currentDraft.trim() === cleanMessage ? "" : currentDraft));
 
     setSending(true);
     try {
-      const response = await askChatbot(cleanMessage, selectedAttachment?.file || null);
+      const response = await askChatbot(cleanMessage, selectedAttachment?.file || null, null, history);
       const reply = response.response || response || {};
       onMessagesChange((current) => [
         ...current,
@@ -2100,10 +2136,14 @@ function DashboardAIAssistantPanel({
           bullets: reply.bullets || response.bullets || [],
           table: reply.table || response.table || null,
           source: reply.source || response.source,
+          nextQuestion: reply.next_question || "",
+          actionRequired: reply.action_required || "",
+          confirmationRequired: Boolean(reply.confirmation_required),
+          action: reply.action || null,
+          createdRecordId: reply.created_record_id || "",
           time: formatAssistantTime(new Date())
         }
       ]);
-      onDraftChange((currentDraft) => (currentDraft.trim() === cleanMessage ? "" : currentDraft));
       setEditingMessage(null);
       if (selectedAttachment) {
         onAttachmentChange(null);
@@ -2179,6 +2219,10 @@ function DashboardAIAssistantPanel({
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
+  function clearDraftText() {
+    onDraftChange("");
+  }
+
   async function refreshAssistantContext() {
     if (refreshingContext || sending) return;
     setRefreshingContext(true);
@@ -2196,6 +2240,26 @@ function DashboardAIAssistantPanel({
       setEditingMessage(null);
       onClear();
     }
+  }
+
+  function confirmAssistantAction(message) {
+    if (!message.action || sending) return;
+    sendMessage("Confirm", { action: message.action });
+  }
+
+  function cancelAssistantAction(message) {
+    if (sending) return;
+    onMessagesChange((current) => [
+      ...current,
+      {
+        id: `assistant-cancel-${Date.now()}`,
+        requestId: message.requestId || "",
+        role: "assistant",
+        text: "Action canceled.",
+        source: "Conci AI",
+        time: formatAssistantTime(new Date())
+      }
+    ]);
   }
 
   return (
@@ -2251,14 +2315,33 @@ function DashboardAIAssistantPanel({
               </ul>
             )}
             <DashboardAIMessageTable table={message.table} />
+            {message.nextQuestion && (
+              <div className="dashboard-ai-followup">
+                <strong>Next question</strong>
+                <span>{message.nextQuestion}</span>
+              </div>
+            )}
+            {message.createdRecordId && (
+              <span className="dashboard-ai-record-link">Created: {message.createdRecordId}</span>
+            )}
+            {message.confirmationRequired && message.action && (
+              <div className="dashboard-ai-confirm-actions">
+                <button type="button" onClick={() => confirmAssistantAction(message)} disabled={sending}>Confirm</button>
+                <button type="button" onClick={() => cancelAssistantAction(message)} disabled={sending}>Cancel</button>
+              </div>
+            )}
             {message.source && <span className="dashboard-ai-source">{message.source}</span>}
             <time>{message.time}</time>
           </article>
         ))}
         {sending && (
-          <article className="dashboard-ai-message assistant">
-            <p>Checking your permitted app data...</p>
-            <time>{formatAssistantTime(new Date())}</time>
+          <article className="dashboard-ai-typing" aria-live="polite">
+            <span className="dashboard-ai-typing-icon"><Sparkles size={15} /></span>
+            <span className="dashboard-ai-typing-dots" aria-label="Conci AI is typing">
+              <i />
+              <i />
+              <i />
+            </span>
           </article>
         )}
       </div>
@@ -2266,7 +2349,8 @@ function DashboardAIAssistantPanel({
       <div className="dashboard-ai-suggestions" aria-label="Conci AI suggestions">
         {suggestions.map((suggestion) => (
           <button key={suggestion} onClick={() => sendMessage(suggestion)} type="button" disabled={sending || Boolean(editingMessage)}>
-            {suggestion}
+            <span className="dashboard-ai-chip-icon">{dashboardAssistantSuggestionIcon(suggestion)}</span>
+            <span>{suggestion}</span>
           </button>
         ))}
       </div>
@@ -2321,6 +2405,16 @@ function DashboardAIAssistantPanel({
           rows={2}
           value={draft}
         />
+        <button
+          className="dashboard-ai-clear-draft-button"
+          disabled={sending || !draft}
+          onClick={clearDraftText}
+          type="button"
+          aria-label="Clear current input"
+          title="Clear input"
+        >
+          <X size={15} />
+        </button>
         <button type="submit" aria-label={editingMessage ? "Update message" : "Send message"} disabled={sending || (!draft.trim() && !attachedFile)}>
           {editingMessage ? <CheckCircle2 size={17} /> : <Send size={17} />}
         </button>
@@ -2338,11 +2432,11 @@ function DashboardAIMessageTable({ table }) {
       <table className="dashboard-ai-table">
         <thead>
           <tr>
-            {columns.map((column) => <th key={column}>{column}</th>)}
+            {columns.map((column) => <th key={column}>{dashboardAIColumnLabel(column)}</th>)}
           </tr>
         </thead>
         <tbody>
-          {table.rows.slice(0, 6).map((row, rowIndex) => (
+          {table.rows.map((row, rowIndex) => (
             <tr key={`${rowIndex}-${columns.join("-")}`}>
               {columns.map((column, columnIndex) => (
                 <td key={column}>
@@ -2355,6 +2449,44 @@ function DashboardAIMessageTable({ table }) {
       </table>
     </div>
   );
+}
+
+function dashboardAssistantHistoryPayload(messages) {
+  return (Array.isArray(messages) ? messages : [])
+    .slice(-8)
+    .map((message) => ({
+      role: message.role || "",
+      text: String(message.text || "").slice(0, 500),
+      source: message.source || ""
+    }))
+    .filter((message) => message.text || message.source);
+}
+
+function dashboardAIColumnLabel(column) {
+  const normalized = String(column || "").trim().toLowerCase();
+  const labels = {
+    service: "Category/Service",
+    category: "Category/Service",
+    contact: "Contact Person",
+    "contact person": "Contact Person",
+    phone: "Contact Number",
+    "contact number": "Contact Number",
+    billing: "Billing",
+    status: "Status",
+    "vendor name": "Vendor Name"
+  };
+  return labels[normalized] || column;
+}
+
+function dashboardAssistantSuggestionIcon(suggestion) {
+  const text = String(suggestion || "").toLowerCase();
+  if (text.includes("approval")) return <ClipboardList size={16} />;
+  if (text.includes("vendor")) return <Building2 size={16} />;
+  if (text.includes("ticket")) return <ShieldCheck size={16} />;
+  if (text.includes("inventory") || text.includes("device")) return <Package size={16} />;
+  if (text.includes("expense") || text.includes("billing") || text.includes("spend")) return <DollarSign size={16} />;
+  if (text.includes("task")) return <ListChecks size={16} />;
+  return <Sparkles size={16} />;
 }
 
 function replaceEditedChatMessage(messages, editingMessage, updatedUserMessage) {
@@ -4455,6 +4587,13 @@ function canManageTicket(user, ticket) {
   return false;
 }
 
+function canUpdateTicketStatus(user, ticket) {
+  if (!user || !ticket) return false;
+  if (user.role === "admin") return true;
+  if (user.role === "it_manager" && ticket.ticket_type === "IT") return true;
+  return false;
+}
+
 function isItRelatedExpense(expense) {
   const text = `${expense.department || ""} ${expense.category || ""}`.toLowerCase();
   return text.includes("it") || text.includes("software") || text.includes("internet");
@@ -4648,7 +4787,7 @@ function TicketsView({ currentUser, onTicketSaved, onUpdated, setError, tickets 
   }
 
   function openStatusModal(ticket) {
-    if (!canManageTicket(currentUser, ticket)) return;
+    if (!canUpdateTicketStatus(currentUser, ticket)) return;
     setToastMessage("");
     setToastType("success");
     setStatusTicket(ticket);
@@ -4935,7 +5074,7 @@ function TicketsView({ currentUser, onTicketSaved, onUpdated, setError, tickets 
                   {ticketPriorityOptions.map((option) => <option key={option} value={option}>{option}</option>)}
                 </select>
               </label>
-              {editingTicket && (
+              {editingTicket && canUpdateTicketStatus(currentUser, editingTicket) && (
                 <label className="vendor-field">
                   Status
                   <select onChange={(event) => updateTicketField("status", event.target.value)} value={form.status}>
@@ -5030,6 +5169,7 @@ function TicketTable({
         <tbody>
           {tickets.map((ticket) => {
             const canManage = canManageTicket(currentUser, ticket);
+            const canChangeStatus = canUpdateTicketStatus(currentUser, ticket);
             return (
               <tr key={ticket.id}>
                 <td><strong>{ticket.ticket_id}</strong></td>
@@ -5073,16 +5213,18 @@ function TicketTable({
                     >
                       <Pencil size={16} />
                     </button>
-                    <button
-                      aria-label="Change ticket status"
-                      className="table-action-button ticket-icon-action action-status"
-                      disabled={!canManage}
-                      onClick={() => onStatus(ticket)}
-                      title={canManage ? "Change status" : "Requires ticket manager access"}
-                      type="button"
-                    >
-                      <RefreshCw size={16} />
-                    </button>
+                    {currentUser?.role !== "finance_manager" && (
+                      <button
+                        aria-label="Change ticket status"
+                        className="table-action-button ticket-icon-action action-status"
+                        disabled={!canChangeStatus}
+                        onClick={() => onStatus(ticket)}
+                        title={canChangeStatus ? "Change status" : "Requires ticket status access"}
+                        type="button"
+                      >
+                        <RefreshCw size={16} />
+                      </button>
+                    )}
                   </div>
                 </td>
               </tr>
@@ -5138,6 +5280,9 @@ function CommunicationSendModal({ context, onClose, onSent, setError }) {
   const [previewing, setPreviewing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [localError, setLocalError] = useState("");
+  const sendsEmail = form.channel === "email" || form.channel === "both";
+  const sendsWhatsApp = form.channel === "whatsapp" || form.channel === "both";
+  const showSubject = sendsEmail;
 
   function updateField(field, value) {
     setForm((current) => ({ ...current, [field]: value }));
@@ -5183,9 +5328,9 @@ function CommunicationSendModal({ context, onClose, onSent, setError }) {
       const response = await sendCommunication({
         ...form,
         recipient_name: form.recipient_name.trim(),
-        recipient_email: form.recipient_email.trim(),
-        recipient_phone: form.recipient_phone.trim(),
-        subject: form.subject.trim(),
+        recipient_email: sendsEmail ? form.recipient_email.trim() : "",
+        recipient_phone: sendsWhatsApp ? form.recipient_phone.trim() : "",
+        subject: showSubject ? form.subject.trim() : "",
         message_body: form.message_body.trim(),
         related_module: context?.related_module || "general",
         related_record_id: String(context?.related_record_id || ""),
@@ -5226,18 +5371,24 @@ function CommunicationSendModal({ context, onClose, onSent, setError }) {
             Recipient name
             <input readOnly={previewing} value={form.recipient_name} onChange={(event) => updateField("recipient_name", event.target.value)} />
           </label>
-          <label className="vendor-field">
-            Recipient email
-            <input readOnly={previewing} value={form.recipient_email} onChange={(event) => updateField("recipient_email", event.target.value)} />
-          </label>
-          <label className="vendor-field">
-            Recipient phone
-            <input readOnly={previewing} value={form.recipient_phone} onChange={(event) => updateField("recipient_phone", event.target.value)} />
-          </label>
-          <label className="vendor-field wide">
-            Subject
-            <input readOnly={previewing} value={form.subject} onChange={(event) => updateField("subject", event.target.value)} />
-          </label>
+          {sendsEmail && (
+            <label className="vendor-field">
+              Recipient email
+              <input readOnly={previewing} value={form.recipient_email} onChange={(event) => updateField("recipient_email", event.target.value)} />
+            </label>
+          )}
+          {sendsWhatsApp && (
+            <label className="vendor-field">
+              Recipient phone
+              <input readOnly={previewing} value={form.recipient_phone} onChange={(event) => updateField("recipient_phone", event.target.value)} />
+            </label>
+          )}
+          {showSubject && (
+            <label className="vendor-field wide">
+              Subject
+              <input readOnly={previewing} value={form.subject} onChange={(event) => updateField("subject", event.target.value)} />
+            </label>
+          )}
           <label className="vendor-field wide">
             Message body
             <textarea readOnly={previewing} rows={7} value={form.message_body} onChange={(event) => updateField("message_body", event.target.value)} />
@@ -5253,6 +5404,32 @@ function CommunicationSendModal({ context, onClose, onSent, setError }) {
           <div className="communication-preview">
             <span>Preview</span>
             <strong>{communicationChannelOptions.find((option) => option.value === form.channel)?.label}</strong>
+            <dl className="communication-preview-meta">
+              {form.recipient_name && (
+                <>
+                  <dt>Recipient</dt>
+                  <dd>{form.recipient_name}</dd>
+                </>
+              )}
+              {sendsEmail && (
+                <>
+                  <dt>Email</dt>
+                  <dd>{form.recipient_email}</dd>
+                </>
+              )}
+              {sendsWhatsApp && (
+                <>
+                  <dt>Phone</dt>
+                  <dd>{form.recipient_phone}</dd>
+                </>
+              )}
+              {showSubject && (
+                <>
+                  <dt>Subject</dt>
+                  <dd>{form.subject}</dd>
+                </>
+              )}
+            </dl>
             <p>{form.message_body}</p>
           </div>
         )}
@@ -5506,6 +5683,15 @@ function VendorsView({ currentUser, onChanged, setError, vendors }) {
     });
   }
 
+  function vendorPhoneForSend(vendor) {
+    return vendor.contact_details
+      || vendor.contactDetails
+      || vendor.phone
+      || vendor.contact_number
+      || vendor.contactNumber
+      || "";
+  }
+
   function closeForm() {
     setFormOpen(false);
     setFormErrors({});
@@ -5757,7 +5943,7 @@ function VendorsView({ currentUser, onChanged, setError, vendors }) {
             detail: "Send a vendor message by Email, WhatsApp, or both.",
             recipient_name: emailVendor.contact_person || emailVendor.vendor_name || "",
             recipient_email: emailVendor.email || "",
-            recipient_phone: emailVendor.contact_details || "",
+            recipient_phone: vendorPhoneForSend(emailVendor),
             subject: emailForm.subject,
             message_body: emailForm.body,
             related_module: "vendors",
@@ -6916,6 +7102,13 @@ function InventoryView({ currentUser, inventoryImports, inventoryItems, onChange
                   <span className={importPreview.errors.length ? "status-pill danger" : "status-pill success"}>{importPreview.errors.length} errors</span>
                   <span className={importPreview.warnings.length ? "status-pill warning" : "status-pill success"}>{importPreview.warnings.length} warnings</span>
                 </div>
+                {importPreview.detected_columns?.length > 0 && (
+                  <div className="import-detected-columns">
+                    <strong>Detected columns:</strong>
+                    <span>{importPreview.detected_columns.join(", ")}</span>
+                    {importPreview.header_row_number && <em>Header row {importPreview.header_row_number}</em>}
+                  </div>
+                )}
                 {(importPreview.errors.length > 0 || importPreview.warnings.length > 0) && (
                   <div className="import-messages">
                     {importPreview.errors.map((message) => <p className="import-error" key={message}>{message}</p>)}
@@ -9267,50 +9460,283 @@ function connectorStatusLabel(status) {
   return "Mock Mode";
 }
 
-function ConnectorsPanel({ connectors, logs, onConfigure, onDisconnect, onSendTest, onTest }) {
+function ConnectorsPanel({ connectors, googleEmailConfigured, logs, onConfigure, onDisconnect, onSendTest, onTest }) {
+  const [cardErrors, setCardErrors] = useState({});
+  const [activeMenu, setActiveMenu] = useState("");
+  const [selectedType, setSelectedType] = useState("email");
+  const [detailsConnector, setDetailsConnector] = useState(null);
+  const [logsOpen, setLogsOpen] = useState(false);
   const byType = Object.fromEntries((connectors || []).map((connector) => [connector.connector_type, connector]));
   const cards = [
-    byType.email || { connector_type: "email", display_name: "Email", provider: "Mock Email", status: "mock_mode", last_tested_at: "" },
+    byType.email || { connector_type: "email", display_name: "Email", provider: "Mock Email", status: "mock_mode", last_tested_at: "", config: {} },
     byType.whatsapp || { connector_type: "whatsapp", display_name: "WhatsApp", provider: "Mock WhatsApp", status: "mock_mode", last_tested_at: "" }
   ];
+  const selectedConnector = cards.find((connector) => connector.connector_type === selectedType) || cards[0];
+
+  function setConnectorError(connectorType, message) {
+    setCardErrors((current) => ({ ...current, [connectorType]: message }));
+  }
+
+  function clearConnectorError(connectorType) {
+    setCardErrors((current) => {
+      const next = { ...current };
+      delete next[connectorType];
+      return next;
+    });
+  }
+
+  async function handleConfigure(connector) {
+    const isEmail = connector.connector_type === "email";
+    setSelectedType(connector.connector_type);
+    setActiveMenu("");
+    clearConnectorError(connector.connector_type);
+    if (isEmail && !googleEmailConfigured) {
+      setConnectorError("email", "Google email connection is not configured yet.");
+      return;
+    }
+    const payload = await onConfigure(connector);
+    if (isEmail && payload && payload.configured === false) {
+      setConnectorError("email", payload.message || "Google email connection is not configured yet.");
+    }
+  }
+
+  async function handleDisconnect(connector) {
+    setSelectedType(connector.connector_type);
+    setActiveMenu("");
+    if (connector.status !== "connected") return;
+    const confirmed = window.confirm(`Are you sure you want to disconnect ${connector.display_name || connector.connector_type}?`);
+    if (!confirmed) return;
+    clearConnectorError(connector.connector_type);
+    await onDisconnect(connector.connector_type);
+  }
+
+  async function handleTest(connector) {
+    setSelectedType(connector.connector_type);
+    setActiveMenu("");
+    clearConnectorError(connector.connector_type);
+    await onTest(connector.connector_type);
+  }
+
+  function handleViewDetails(connector) {
+    setSelectedType(connector.connector_type);
+    setActiveMenu("");
+    setDetailsConnector(connector);
+  }
+
+  function connectorMeta(connector) {
+    const isEmail = connector.connector_type === "email";
+    const isConnected = connector.status === "connected";
+    const connectedEmail = connector.config?.connected_email || connector.config?.email || "";
+    const connectedAt = connector.config?.connected_at || (isConnected ? connector.updated_at : "");
+    const provider = connector.provider || (isEmail ? "Mock Email" : "Mock WhatsApp");
+    const oauthStatus = !googleEmailConfigured
+      ? "Google email connection is not configured yet."
+      : connectedEmail
+        ? `Connected as ${connectedEmail}`
+        : "Configured, ready to connect";
+    const whatsappConfigStatus = connector.config?.business_phone_number
+      || connector.config?.twilio_whatsapp_sender_number
+      || connector.config?.whatsapp_phone_number_id
+      ? "Configured"
+      : "Mock or not configured";
+    return {
+      connectedAt,
+      provider,
+      subtext: isEmail ? "Gmail OAuth" : whatsappConfigStatus,
+      serviceStatus: isEmail ? oauthStatus : whatsappConfigStatus
+    };
+  }
+
+  const selectedIsConnected = selectedConnector?.status === "connected";
+
   return (
     <section className="dashboard-card connectors-card">
-      <div className="section-heading">
-        <div>
-          <h2>Connectors</h2>
-          <p>Configure Email and WhatsApp accounts for bills, reports, reminders, approvals, and vendor messages.</p>
+      <div className="connector-section-heading">
+        <div className="connector-title-group">
+          <span className="connector-section-icon"><Plug size={30} /></span>
+          <div>
+            <h2>Connectors</h2>
+            <p>Configure Email and WhatsApp accounts for bills, reports, reminders, approvals, and vendor messages.</p>
+          </div>
         </div>
-        <span className="count-badge">{logs.length} Logs</span>
+        <button
+          className="connector-logs-button"
+          onClick={() => setLogsOpen(true)}
+          type="button"
+          aria-label="Open communication logs"
+        >
+          <span className="count-badge"><FileText size={16} /> {logs.length} Logs</span>
+          <ChevronRight size={22} />
+        </button>
       </div>
-      <div className="connector-grid">
-        {cards.map((connector) => {
-          const Icon = connector.connector_type === "email" ? Mail : Phone;
-          return (
-            <article className="connector-card" key={connector.connector_type}>
-              <div className="connector-card-header">
-                <div className="connector-heading">
-                  <span className="connector-icon"><Icon size={18} /></span>
-                  <div>
-                    <h3>{connector.display_name || connectorStatusLabel(connector.connector_type)}</h3>
-                    <p>{connector.provider || "Mock"}</p>
+      <div className="connector-table-card">
+        <table className="connector-table">
+          <thead>
+            <tr>
+              <th>Connector</th>
+              <th>Provider</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {cards.map((connector) => {
+              const isEmail = connector.connector_type === "email";
+              const Icon = isEmail ? Mail : MessageCircle;
+              const meta = connectorMeta(connector);
+              return (
+                <tr
+                  className={selectedType === connector.connector_type ? "connector-row selected" : "connector-row"}
+                  key={connector.connector_type}
+                  onClick={() => setSelectedType(connector.connector_type)}
+                >
+                  <td>
+                    <div className="connector-table-identity">
+                      <span className={`connector-table-icon ${connector.connector_type}`}><Icon size={25} /></span>
+                      <div>
+                        <strong>{connector.display_name || (isEmail ? "Email" : "WhatsApp")}</strong>
+                        <span className="connector-provider-badge">{meta.provider}</span>
+                      </div>
+                    </div>
+                  </td>
+                  <td>
+                    <div className="connector-provider-cell">
+                      <strong>{meta.provider}</strong>
+                      <span>{meta.subtext}</span>
+                    </div>
+                  </td>
+                  <td>
+                    <span className={`connector-status ${connector.status}`}>{connectorStatusLabel(connector.status)}</span>
+                  </td>
+                  <td>
+                    <div className="connector-menu-cell">
+                      <button
+                        className="connector-gear-button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedType(connector.connector_type);
+                          setActiveMenu((current) => current === connector.connector_type ? "" : connector.connector_type);
+                        }}
+                        type="button"
+                        aria-label={`${connector.display_name || connector.connector_type} actions`}
+                      >
+                        <Settings size={20} />
+                      </button>
+                      {activeMenu === connector.connector_type && (
+                        <div className="connector-action-menu" onClick={(event) => event.stopPropagation()} role="menu">
+                          <button onClick={() => handleConfigure(connector)} type="button" role="menuitem">
+                            <Plus size={20} />
+                            Connect / Configure
+                          </button>
+                          <button onClick={() => handleTest(connector)} type="button" role="menuitem">
+                            <Send size={20} />
+                            Send Test
+                          </button>
+                          <button onClick={() => handleViewDetails(connector)} type="button" role="menuitem">
+                            <Eye size={20} />
+                            View Details
+                          </button>
+                          <span className="connector-action-divider" />
+                          <button
+                            className="danger"
+                            disabled={connector.status !== "connected"}
+                            onClick={() => handleDisconnect(connector)}
+                            type="button"
+                            role="menuitem"
+                          >
+                            <Trash2 size={20} />
+                            Disconnect
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {cards.map((connector) => (
+        cardErrors[connector.connector_type] ? (
+          <div className="connector-card-error" key={`${connector.connector_type}-error`} role="alert">{cardErrors[connector.connector_type]}</div>
+        ) : null
+      ))}
+      <div className="connector-actions">
+        <button className="icon-button primary" onClick={() => handleConfigure(selectedConnector)} type="button">
+          <Plus size={18} />
+          Connect / Configure
+        </button>
+        <button className="icon-button secondary" onClick={() => handleTest(selectedConnector)} type="button">
+          <Send size={18} />
+          Send Test
+        </button>
+        <button
+          className="icon-button secondary danger-inline"
+          disabled={!selectedIsConnected}
+          onClick={() => handleDisconnect(selectedConnector)}
+          type="button"
+        >
+          <Trash2 size={18} />
+          Disconnect
+        </button>
+      </div>
+      {detailsConnector && (
+        <div className="modal-backdrop">
+          <section className="vendor-modal connector-details-dialog" role="dialog" aria-modal="true" aria-label="Connector details">
+            <div className="section-heading">
+              <div>
+                <h2>{detailsConnector.display_name || connectorStatusLabel(detailsConnector.connector_type)} Details</h2>
+                <p>{connectorMeta(detailsConnector).provider}</p>
+              </div>
+              <button className="icon-only" onClick={() => setDetailsConnector(null)} type="button" aria-label="Close connector details">
+                <X size={18} />
+              </button>
+            </div>
+            <dl className="connector-detail-grid">
+              <div><dt>Provider</dt><dd>{connectorMeta(detailsConnector).provider}</dd></div>
+              <div><dt>Status</dt><dd>{connectorStatusLabel(detailsConnector.status)}</dd></div>
+              <div><dt>{detailsConnector.connector_type === "email" ? "Gmail OAuth" : "WhatsApp provider"}</dt><dd>{connectorMeta(detailsConnector).serviceStatus}</dd></div>
+              <div><dt>Last connected</dt><dd>{connectorMeta(detailsConnector).connectedAt ? formatCreatedDate(connectorMeta(detailsConnector).connectedAt) : "Never"}</dd></div>
+              <div><dt>Last tested</dt><dd>{detailsConnector.last_tested_at ? formatCreatedDate(detailsConnector.last_tested_at) : "Never"}</dd></div>
+              <div><dt>Connector owner</dt><dd>Your account</dd></div>
+            </dl>
+            <div className="vendor-modal-actions">
+              <button className="icon-button secondary" onClick={() => setDetailsConnector(null)} type="button">Close</button>
+            </div>
+          </section>
+        </div>
+      )}
+      {logsOpen && (
+        <div className="modal-backdrop">
+          <section className="vendor-modal connector-details-dialog" role="dialog" aria-modal="true" aria-label="Communication logs">
+            <div className="section-heading">
+              <div>
+                <h2>Communication Logs</h2>
+                <p>{logs.length} recent connector log{logs.length === 1 ? "" : "s"}</p>
+              </div>
+              <button className="icon-only" onClick={() => setLogsOpen(false)} type="button" aria-label="Close communication logs">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="connector-log-list">
+              {logs.length === 0 ? (
+                <p className="empty">No communication logs yet.</p>
+              ) : (
+                logs.slice(0, 12).map((log) => (
+                  <div className="connector-log-row" key={log.id || `${log.channel}-${log.sent_at}`}>
+                    <strong>{log.subject || log.related_module || log.channel || "Message"}</strong>
+                    <span>{log.channel || "channel"} · {log.status || "status unavailable"} · {log.sent_at ? formatCreatedDate(log.sent_at) : "Date unavailable"}</span>
                   </div>
-                </div>
-                <span className={`connector-status ${connector.status}`}>{connectorStatusLabel(connector.status)}</span>
-              </div>
-              <dl className="connector-meta">
-                <div><dt>Provider</dt><dd>{connector.provider || "Mock"}</dd></div>
-                <div><dt>Last tested</dt><dd>{connector.last_tested_at ? formatCreatedDate(connector.last_tested_at) : "Never"}</dd></div>
-              </dl>
-              <div className="connector-actions">
-                <button className="icon-button secondary" onClick={() => onConfigure(connector)} type="button">Connect / Configure</button>
-                <button className="icon-button secondary" onClick={() => onTest(connector.connector_type)} type="button">Test Connection</button>
-                <button className="icon-button secondary" onClick={() => onSendTest(connector)} type="button">Send Test Message</button>
-                <button className="icon-button secondary danger-inline" onClick={() => onDisconnect(connector.connector_type)} type="button">Disconnect</button>
-              </div>
-            </article>
-          );
-        })}
-      </div>
+                ))
+              )}
+            </div>
+            <div className="vendor-modal-actions">
+              <button className="icon-button secondary" onClick={() => setLogsOpen(false)} type="button">Close</button>
+            </div>
+          </section>
+        </div>
+      )}
     </section>
   );
 }
@@ -9368,18 +9794,15 @@ function ConnectorConfigModal({ connector, currentUser, onClose, onSaved, setErr
 
   async function submit(event) {
     event.preventDefault();
+    if (isEmail) {
+      setError("Email is connected with Google OAuth. Use Connect Gmail from the connector card.");
+      return;
+    }
     setSaving(true);
     setError("");
     try {
-      if (isEmail) {
-        await configureEmailConnector({
-          ...form,
-          smtp_port: form.smtp_port ? Number(form.smtp_port) : null
-        });
-      } else {
-        await configureWhatsAppConnector(form);
-      }
-      await onSaved(`${isEmail ? "Email" : "WhatsApp"} connector saved`);
+      await configureWhatsAppConnector(form);
+      await onSaved("WhatsApp connector saved");
     } catch (err) {
       setError(apiErrorMessage(err));
     } finally {
@@ -9392,8 +9815,8 @@ function ConnectorConfigModal({ connector, currentUser, onClose, onSaved, setErr
       <form className="vendor-modal connector-modal" onSubmit={submit} role="dialog" aria-modal="true" aria-label="Configure connector">
         <div className="section-heading">
           <div>
-            <h2>Configure {isEmail ? "Email" : "WhatsApp"}</h2>
-            <p>Secrets are read from .env in real mode. Values here are stored only as non-secret display settings.</p>
+            <h2>Configure {isEmail ? "Gmail" : "WhatsApp"}</h2>
+            <p>{isEmail ? "Email connects through Google OAuth. Gmail passwords are never entered in Agent Concierge." : "Secrets are read from .env in real mode. Values here are stored only as non-secret display settings."}</p>
           </div>
           <button className="icon-only" onClick={onClose} type="button" aria-label="Close connector form">
             <X size={16} />
@@ -9409,16 +9832,10 @@ function ConnectorConfigModal({ connector, currentUser, onClose, onSaved, setErr
             </select>
           </label>
           {isEmail ? (
-            <>
-              <VendorField label="From name" onChange={(value) => updateField("from_name", value)} value={form.from_name} />
-              <VendorField label="From email" onChange={(value) => updateField("from_email", value)} value={form.from_email} />
-              <VendorField label="SMTP host" onChange={(value) => updateField("smtp_host", value)} value={form.smtp_host} />
-              <VendorField label="SMTP port" onChange={(value) => updateField("smtp_port", value.replace(/[^\d]/g, ""))} value={String(form.smtp_port || "")} />
-              <VendorField label="SMTP username" onChange={(value) => updateField("smtp_username", value)} value={form.smtp_username} />
-              <VendorField label="SMTP password" onChange={(value) => updateField("smtp_password", value)} type="password" value={form.smtp_password} />
-              <VendorField label="SendGrid API key" onChange={(value) => updateField("sendgrid_api_key", value)} type="password" value={form.sendgrid_api_key} />
-              <VendorField label="Reply-to email" onChange={(value) => updateField("reply_to_email", value)} value={form.reply_to_email} />
-            </>
+            <div className="connector-oauth-note wide">
+              <strong>Use Connect Gmail from the connector card.</strong>
+              <span>Google will handle login and consent, then return you to Agent Concierge.</span>
+            </div>
           ) : (
             <>
               <VendorField label="Business phone number" onChange={(value) => updateField("business_phone_number", value)} value={form.business_phone_number} />
@@ -9433,7 +9850,7 @@ function ConnectorConfigModal({ connector, currentUser, onClose, onSaved, setErr
         </div>
         <div className="modal-actions">
           <button className="icon-button secondary" onClick={onClose} type="button">Cancel</button>
-          <button className="primary-button" disabled={saving} type="submit">{saving ? "Saving..." : "Save Connector"}</button>
+          <button className="primary-button" disabled={saving || isEmail} type="submit">{saving ? "Saving..." : "Save Connector"}</button>
         </div>
       </form>
     </div>
@@ -9462,6 +9879,7 @@ function SettingsView({ currentUser, health, onChanged, setError, users }) {
   const isAdmin = currentUser.role === "admin";
   const [createOpen, setCreateOpen] = useState(false);
   const [connectors, setConnectors] = useState([]);
+  const [googleEmailConfigured, setGoogleEmailConfigured] = useState(false);
   const [communicationLogs, setCommunicationLogs] = useState([]);
   const [connectorModal, setConnectorModal] = useState(null);
   const [connectorToast, setConnectorToast] = useState("");
@@ -9508,6 +9926,7 @@ function SettingsView({ currentUser, health, onChanged, setError, users }) {
         ]);
         if (!cancelled) {
           setConnectors(connectorPayload.connectors || []);
+          setGoogleEmailConfigured(Boolean(connectorPayload.google_email_configured));
           setCommunicationLogs(logPayload.logs || []);
         }
       } catch (err) {
@@ -9526,6 +9945,7 @@ function SettingsView({ currentUser, health, onChanged, setError, users }) {
       getCommunicationLogs()
     ]);
     setConnectors(connectorPayload.connectors || []);
+    setGoogleEmailConfigured(Boolean(connectorPayload.google_email_configured));
     setCommunicationLogs(logPayload.logs || []);
     setConnectorToast(message);
   }
@@ -9597,79 +10017,44 @@ function SettingsView({ currentUser, health, onChanged, setError, users }) {
 
   return (
     <section className="settings-page screen-stack">
-      <div className="vendors-page-header settings-page-header">
-        <div className="page-title">
-          <div className="directory-title-row">
-            <h1>{isAdmin ? "Users" : "Settings"}</h1>
-            {isAdmin && (
-              <span className="user-count-badge">
-                <UserRound size={17} />
-                <strong>{createdUsers.length} Users</strong>
-              </span>
-            )}
-          </div>
-          <p>{isAdmin ? "View and manage all created user accounts." : "Manage your profile and communication connectors."}</p>
-        </div>
-        {isAdmin && (
-          <div className="vendors-top-action settings-top-action">
-            <label className="vendor-search-control user-search-control" aria-label="Search users">
-              <Search size={17} />
-              <input
-                onChange={(event) => setUserSearch(event.target.value)}
-                placeholder="Search users..."
-                value={userSearch}
-              />
-              {userSearch && (
-                <button
-                  aria-label="Clear user search"
-                  onClick={() => setUserSearch("")}
-                  title="Clear user search"
-                  type="button"
-                >
-                  <X size={15} />
-                </button>
-              )}
-            </label>
-            <div className="vendor-filter-wrap">
-              <button
-                aria-expanded={filtersOpen}
-                className="icon-button secondary vendor-filter-button"
-                onClick={() => setFiltersOpen((open) => !open)}
-                type="button"
-              >
-                <Filter size={17} />
-                <span>Filter</span>
-                {activeFilterCount > 0 && <strong>{activeFilterCount}</strong>}
-              </button>
-              {filtersOpen && (
-                <div className="vendor-filter-panel user-filter-panel" role="dialog" aria-label="User filters">
-                  <label>
-                    Role
-                    <select value={userFilters.role} onChange={(event) => setUserFilters((current) => ({ ...current, role: event.target.value }))}>
-                      <option value="All">All</option>
-                      {roleOptions.map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}
-                    </select>
-                  </label>
-                  <button className="table-action-button" onClick={() => setUserFilters({ role: "All" })} type="button">Clear</button>
-                </div>
-              )}
+      {!isAdmin && (
+        <div className="vendors-page-header settings-page-header">
+          <div className="page-title">
+            <div className="directory-title-row">
+              <h1>Settings</h1>
             </div>
-            <button className="primary-button vendor-add-button" onClick={openCreateUser} type="button">
-              <Plus size={18} />
-              <span>Add User</span>
-            </button>
+            <p>Manage your profile and communication connectors.</p>
           </div>
-        )}
-      </div>
-      <ProfileSettingsCard currentUser={currentUser} health={health} />
+        </div>
+      )}
       <ConnectorsPanel
         connectors={connectors}
+        googleEmailConfigured={googleEmailConfigured}
         logs={communicationLogs}
-        onConfigure={setConnectorModal}
+        onConfigure={async (connector) => {
+          setError("");
+          if (connector.connector_type !== "email") {
+            setConnectorModal(connector);
+            return null;
+          }
+          try {
+            const payload = await startGoogleEmailConnection();
+            if (!payload.configured) {
+              return payload;
+            }
+            if (payload.authorization_url) {
+              window.location.href = payload.authorization_url;
+            }
+            return payload;
+          } catch (err) {
+            setError(apiErrorMessage(err));
+            return null;
+          }
+        }}
         onDisconnect={async (connectorType) => {
           setError("");
           try {
-            await disconnectConnector(connectorType);
+            await (connectorType === "email" ? disconnectGoogleEmail() : disconnectConnector(connectorType));
             await refreshConnectors("Connector disconnected");
           } catch (err) {
             setError(apiErrorMessage(err));
@@ -9678,7 +10063,7 @@ function SettingsView({ currentUser, health, onChanged, setError, users }) {
         onTest={async (connectorType) => {
           setError("");
           try {
-            await (connectorType === "email" ? testEmailConnector() : testWhatsAppConnector());
+            await (connectorType === "email" ? testGoogleEmailConnector() : testWhatsAppConnector());
             await refreshConnectors("Connector test completed");
           } catch (err) {
             setError(apiErrorMessage(err));
@@ -9688,7 +10073,69 @@ function SettingsView({ currentUser, health, onChanged, setError, users }) {
       />
       {connectorToast && <div className="toast-notification" role="status">{connectorToast}</div>}
       {isAdmin && (
-        <UserManagement currentUser={currentUser} filteredUsers={filteredUsers} onChanged={onChanged} setError={setError} totalUsers={createdUsers.length} users={createdUsers} />
+        <>
+          <div className="vendors-page-header settings-page-header user-management-top">
+            <div className="page-title">
+              <div className="directory-title-row">
+                <h1>Users</h1>
+                <span className="user-count-badge">
+                  <UserRound size={17} />
+                  <strong>{createdUsers.length} Users</strong>
+                </span>
+              </div>
+              <p>View and manage all created user accounts.</p>
+            </div>
+            <div className="vendors-top-action settings-top-action">
+              <label className="vendor-search-control user-search-control" aria-label="Search users">
+                <Search size={17} />
+                <input
+                  onChange={(event) => setUserSearch(event.target.value)}
+                  placeholder="Search users..."
+                  value={userSearch}
+                />
+                {userSearch && (
+                  <button
+                    aria-label="Clear user search"
+                    onClick={() => setUserSearch("")}
+                    title="Clear user search"
+                    type="button"
+                  >
+                    <X size={15} />
+                  </button>
+                )}
+              </label>
+              <div className="vendor-filter-wrap">
+                <button
+                  aria-expanded={filtersOpen}
+                  className="icon-button secondary vendor-filter-button"
+                  onClick={() => setFiltersOpen((open) => !open)}
+                  type="button"
+                >
+                  <Filter size={17} />
+                  <span>Filter</span>
+                  {activeFilterCount > 0 && <strong>{activeFilterCount}</strong>}
+                </button>
+                {filtersOpen && (
+                  <div className="vendor-filter-panel user-filter-panel" role="dialog" aria-label="User filters">
+                    <label>
+                      Role
+                      <select value={userFilters.role} onChange={(event) => setUserFilters((current) => ({ ...current, role: event.target.value }))}>
+                        <option value="All">All</option>
+                        {roleOptions.map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}
+                      </select>
+                    </label>
+                    <button className="table-action-button" onClick={() => setUserFilters({ role: "All" })} type="button">Clear</button>
+                  </div>
+                )}
+              </div>
+              <button className="primary-button vendor-add-button" onClick={openCreateUser} type="button">
+                <Plus size={18} />
+                <span>Add User</span>
+              </button>
+            </div>
+          </div>
+          <UserManagement currentUser={currentUser} filteredUsers={filteredUsers} onChanged={onChanged} setError={setError} totalUsers={createdUsers.length} users={createdUsers} />
+        </>
       )}
       {connectorModal && (
         <ConnectorConfigModal

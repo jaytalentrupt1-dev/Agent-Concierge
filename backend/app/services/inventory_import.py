@@ -23,29 +23,49 @@ INVENTORY_CATEGORIES = {
 HEADER_MAP = {
     "employeename": "employee_name",
     "employee": "employee_name",
+    "empname": "employee_name",
+    "fullname": "employee_name",
+    "username": "employee_name",
+    "assignedto": "employee_name",
+    "user": "employee_name",
+    "name": "employee_name",
+    "names": "employee_name",
+    "srno": "serial_no",
     "serialno": "serial_no",
+    "serialnumber": "serial_no",
+    "serialnum": "serial_no",
     "serial": "serial_no",
+    "assetserial": "serial_no",
+    "servicetag": "serial_no",
+    "laptopbrand": "model_no",
+    "brand": "model_no",
     "modelno": "model_no",
     "modelnumber": "model_no",
+    "modelname": "model_no",
+    "model": "model_no",
     "ram": "ram",
     "memory": "ram",
     "disk": "disk",
     "storage": "disk",
+    "harddisk": "disk",
+    "ssd": "disk",
+    "hdd": "disk",
+    "officelocation": "location",
+    "branch": "location",
+    "assetstatus": "status",
+    "remarks": "notes",
+    "comment": "notes",
+    "comments": "notes",
     "itemid": "item_id",
     "id": "item_id",
     "itemname": "item_name",
-    "name": "item_name",
     "category": "category",
     "subcategory": "subcategory",
-    "brand": "brand",
-    "model": "model",
-    "serialnumber": "serial_number",
     "quantity": "quantity",
     "qty": "quantity",
     "unit": "unit",
     "condition": "condition",
     "location": "location",
-    "assignedto": "assigned_to",
     "department": "department",
     "purchasedate": "purchase_date",
     "warrantyenddate": "warranty_end_date",
@@ -83,14 +103,47 @@ EMPTY_INVENTORY_ITEM = {
     "notes": "",
 }
 
-NEW_REQUIRED_FIELDS = {
+NEW_IMPORT_FIELDS = {
+    "employee_name",
+    "serial_no",
+    "model_no",
+    "ram",
+    "disk",
+    "location",
+    "status",
+    "notes",
+}
+
+NEW_IDENTITY_FIELDS = {
     "employee_name": "Employee name",
     "serial_no": "Serial No.",
     "model_no": "Model No.",
+}
+
+OPTIONAL_NEW_FIELDS = {
     "ram": "RAM",
     "disk": "Disk",
     "location": "Location",
     "status": "Status",
+    "notes": "Notes",
+}
+
+DISPLAY_FIELD_LABELS = {
+    **NEW_IDENTITY_FIELDS,
+    **OPTIONAL_NEW_FIELDS,
+    "item_id": "Item ID",
+    "item_name": "Item Name",
+    "category": "Category",
+    "subcategory": "Subcategory",
+    "brand": "Brand",
+    "quantity": "Quantity",
+    "unit": "Unit",
+    "condition": "Condition",
+    "department": "Department",
+    "purchase_date": "Purchase Date",
+    "warranty_end_date": "Warranty End Date",
+    "vendor": "Vendor",
+    "minimum_stock_level": "Minimum Stock Level",
 }
 
 LEGACY_REQUIRED_FIELDS = {
@@ -325,19 +378,31 @@ def _build_preview(rows: list[list[str]], *, filename: str, file_type: str) -> d
             "rows": [],
             "errors": ["File must include a header row and at least one item row."],
             "warnings": [],
+            "detected_columns": [],
+            "header_row_number": None,
         }
-    header_keys = [_header_key(header) for header in rows[0]]
+    header_index, header_keys = _detect_header_row(rows)
     parsed_rows = []
     errors: list[str] = []
     warnings: list[str] = []
     known_headers = {key for key in header_keys if key}
-    has_new_template = any(key in known_headers for key in ["employee_name", "serial_no", "model_no", "ram", "disk"])
-    required_fields = NEW_REQUIRED_FIELDS if has_new_template else LEGACY_REQUIRED_FIELDS
+    has_identity_header = any(key in known_headers for key in NEW_IDENTITY_FIELDS)
+    has_new_template = has_identity_header or any(key in known_headers for key in ["ram", "disk"])
+    required_fields = {} if has_new_template else LEGACY_REQUIRED_FIELDS
     missing_required_headers = [key for key in required_fields if key not in known_headers]
-    if missing_required_headers:
+    if not known_headers:
         errors.append("This file does not match the inventory template. Please download and use the sample template.")
+    elif has_new_template and not has_identity_header:
+        errors.append("This file does not match the inventory template. Please download and use the sample template.")
+    elif missing_required_headers:
+        errors.append("This file does not match the inventory template. Please download and use the sample template.")
+    if has_new_template and has_identity_header:
+        missing_optional = [label for key, label in OPTIONAL_NEW_FIELDS.items() if key not in known_headers]
+        if missing_optional:
+            warnings.append(f"Missing optional columns defaulted: {', '.join(missing_optional)}")
+    has_template_error = bool(errors)
 
-    for index, row in enumerate(rows[1:], start=2):
+    for index, row in enumerate(rows[header_index + 1 :], start=header_index + 2):
         if not any(str(cell).strip() for cell in row):
             continue
         item = dict(EMPTY_INVENTORY_ITEM)
@@ -347,8 +412,8 @@ def _build_preview(rows: list[list[str]], *, filename: str, file_type: str) -> d
             key = header_keys[column_index]
             if key:
                 item[key] = str(value or "").strip()
-        row_warnings = [] if missing_required_headers else _normalize_import_item(item, has_new_template=has_new_template)
-        row_errors = [] if missing_required_headers else _validate_import_item(item, required_fields=required_fields, has_new_template=has_new_template)
+        row_warnings = [] if has_template_error else _normalize_import_item(item, has_new_template=has_new_template)
+        row_errors = [] if has_template_error else _validate_import_item(item, required_fields=required_fields, has_new_template=has_new_template)
         parsed_rows.append(
             {
                 "rowNumber": index,
@@ -369,6 +434,8 @@ def _build_preview(rows: list[list[str]], *, filename: str, file_type: str) -> d
         "rows": parsed_rows,
         "errors": errors,
         "warnings": warnings,
+        "detected_columns": _detected_columns(header_keys),
+        "header_row_number": header_index + 1 if header_index >= 0 else None,
     }
 
 
@@ -407,6 +474,9 @@ def _normalize_import_item(item: dict[str, str], *, has_new_template: bool) -> l
 
 def _validate_import_item(item: dict[str, str], *, required_fields: dict[str, str], has_new_template: bool) -> list[str]:
     errors = []
+    if has_new_template and not any(str(item.get(key, "")).strip() for key in NEW_IDENTITY_FIELDS):
+        errors.append("At least one of Employee name, Serial No., or Model No. is required")
+        return errors
     for key, label in required_fields.items():
         if not str(item.get(key, "")).strip():
             errors.append(f"{label} is required")
@@ -442,6 +512,48 @@ def _is_iso_date(value: str) -> bool:
 
 def _header_key(header: str) -> str:
     return HEADER_MAP.get(re.sub(r"[^a-z0-9]+", "", str(header).lower()), "")
+
+
+def _detect_header_row(rows: list[list[str]]) -> tuple[int, list[str]]:
+    best_index = 0
+    best_keys = [_header_key(header) for header in rows[0]] if rows else []
+    best_score = _header_score(best_keys)
+    for index, row in enumerate(rows[1:], start=1):
+        keys = [_header_key(header) for header in row]
+        score = _header_score(keys)
+        if score > best_score:
+            best_index = index
+            best_keys = keys
+            best_score = score
+    return best_index, best_keys
+
+
+def _header_score(header_keys: list[str]) -> tuple[int, int, int, int]:
+    known_headers = {key for key in header_keys if key}
+    identity_count = len(known_headers.intersection(NEW_IDENTITY_FIELDS))
+    compact_count = len(known_headers.intersection(NEW_IMPORT_FIELDS))
+    legacy_count = len(known_headers.intersection(LEGACY_REQUIRED_FIELDS))
+    recognized_count = len(known_headers)
+    if identity_count:
+        family_score = 3
+    elif all(key in known_headers for key in LEGACY_REQUIRED_FIELDS):
+        family_score = 2
+    elif compact_count or legacy_count:
+        family_score = 1
+    else:
+        family_score = 0
+    return (family_score, identity_count, compact_count + legacy_count, recognized_count)
+
+
+def _detected_columns(header_keys: list[str]) -> list[str]:
+    detected = []
+    seen = set()
+    for key in header_keys:
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        detected.append(DISPLAY_FIELD_LABELS.get(key, key.replace("_", " ").title()))
+    return detected
 
 
 def _column_index(reference: str) -> int | None:

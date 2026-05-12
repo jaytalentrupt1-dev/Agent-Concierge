@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import os
 import sqlite3
 import sys
@@ -16,7 +17,7 @@ sys.path.insert(0, str(ROOT))
 
 from app.repositories.admin_repository import AdminRepository
 from app.main import create_app
-from app.core.config import openai_api_key_from_env
+from app.core.config import deepinfra_api_key_from_env, openai_api_key_from_env, settings
 from app.services.agent_planner import (
     MockAdminAgentPlanner,
     OpenAIResponsesAdminAgentPlanner,
@@ -25,6 +26,7 @@ from app.services.agent_planner import (
 from app.services.approval_rules import ApprovalRulesService
 from app.services.approval_service import ApprovalService
 from app.services.audit_service import AuditService
+from app.services.deepinfra_service import DeepInfraChatClient, get_deepinfra_client, parse_json_object
 from app.services.mock_ai import MockAdminAI
 from app.services.policy import approval_reason, can_auto_execute, requires_approval
 from app.services.workflow import VendorReviewWorkflow
@@ -687,7 +689,11 @@ class VendorWorkflowTest(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        table = response.json()["response"]["table"]
+        payload = response.json()["response"]
+        self.assertIn("food vendors", payload["answer"])
+        self.assertNotIn("Showing first 10", payload["answer"])
+        self.assertEqual(payload["bullets"], [])
+        table = payload["table"]
         self.assertIn("Contact", table["columns"])
         self.assertIn("Phone", table["columns"])
         self.assertIn("Service", table["columns"])
@@ -700,6 +706,394 @@ class VendorWorkflowTest(unittest.TestCase):
         self.assertEqual(rohit_row["Billing"], "₹4,322 / Q")
         self.assertEqual(rohit_row["End Date"], "31/12/2026")
         self.assertEqual(rohit_row["Status"], "Active")
+
+    def test_chatbot_vendor_details_honors_requested_count(self):
+        client, _ = self.api_client()
+        admin_headers = self.auth_headers(client)
+        vendors_response = client.get("/api/vendors", headers=admin_headers)
+        self.assertEqual(vendors_response.status_code, 200)
+        existing_count = len(vendors_response.json()["vendors"])
+        for index in range(existing_count + 1, 27):
+            created = client.post(
+                "/api/vendors",
+                json=self.vendor_payload(
+                    vendor_name=f"Requested Count Vendor {index}",
+                    contact_person=f"Contact {index}",
+                    email=f"requested.vendor.{index}@example.com",
+                    contact_details=f"90000000{index:02d}",
+                    service_provided="Office Supplies",
+                    billing_amount=1000 + index,
+                    billing_cycle="Monthly",
+                    end_date="2026-12-31",
+                ),
+                headers=admin_headers,
+            )
+            self.assertEqual(created.status_code, 200)
+
+        response = client.post(
+            "/api/chat/assistant",
+            json={"message": "give me 26 vendors details"},
+            headers=admin_headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()["response"]
+        self.assertIn("I found", payload["answer"])
+        self.assertNotIn("Showing first 10", payload["answer"])
+        self.assertEqual(payload["bullets"], [])
+        table = payload["table"]
+        self.assertEqual(len(table["rows"]), 26)
+        for column in ["Vendor Name", "Service", "Contact", "Phone", "Billing", "End Date", "Status"]:
+            self.assertIn(column, table["columns"])
+
+    def test_chatbot_employee_can_create_ticket_from_natural_language(self):
+        client, _ = self.api_client()
+        headers = self.auth_headers(client, "employee@company.com", "employee123")
+
+        response = client.post(
+            "/api/chat/assistant",
+            json={"message": "create ticket for me laptop not working"},
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()["response"]
+        self.assertEqual(payload["source"], "Ticket agent")
+        self.assertIn("Created ticket", payload["answer"])
+        self.assertTrue(payload["created_record_id"].startswith("IT-"))
+        self.assertEqual(payload["table"]["rows"][0]["Status"], "Open")
+
+        tickets = client.get("/api/tickets", headers=headers).json()["tickets"]
+        created = next(ticket for ticket in tickets if ticket["ticket_id"] == payload["created_record_id"])
+        self.assertEqual(created["requester_email"], "employee@company.com")
+        self.assertEqual(created["ticket_type"], "IT")
+        self.assertEqual(created["category"], "Device")
+
+    def test_chatbot_answers_today_date_utility_question(self):
+        client, _ = self.api_client()
+        headers = self.auth_headers(client)
+
+        response = client.post(
+            "/api/chat/assistant",
+            json={"message": "what todays date"},
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()["response"]
+        self.assertEqual(payload["source"], "Date and time")
+        self.assertRegex(payload["answer"], r"Today's date is \d{2}/\d{2}/\d{4}\.")
+
+    def test_chatbot_calendar_events_are_not_confused_with_today_date(self):
+        client, _ = self.api_client()
+        headers = self.auth_headers(client)
+
+        response = client.post(
+            "/api/chat/assistant",
+            json={"message": "can you show me calendar events"},
+            headers=headers,
+        )
+        typo_response = client.post(
+            "/api/chat/assistant",
+            json={"message": "show calender events"},
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()["response"]
+        self.assertEqual(payload["source"], "Calendar events")
+        self.assertEqual(payload["answer"], "Here are calendar events:")
+        self.assertIn("table", payload)
+        self.assertGreaterEqual(len(payload["table"]["rows"]), 3)
+        self.assertNotIn("Today's date", payload["answer"])
+
+        self.assertEqual(typo_response.status_code, 200)
+        typo_payload = typo_response.json()["response"]
+        self.assertEqual(typo_payload["source"], "Calendar events")
+        self.assertIn("table", typo_payload)
+
+    def test_chatbot_intent_priority_overrides_bad_external_date_for_calendar(self):
+        with (
+            patch.object(settings, "ai_provider", "deepinfra"),
+            patch.object(settings, "deepinfra_api_key", "df-" + ("x" * 32)),
+            patch.object(DeepInfraChatClient, "classify_intent", return_value={"intent": "utility_date", "confidence": 0.99, "entities": {}}),
+            patch.object(DeepInfraChatClient, "refine_response", side_effect=RuntimeError("skip external refine")),
+        ):
+            client, _ = self.api_client()
+            headers = self.auth_headers(client)
+            response = client.post(
+                "/api/chat/assistant",
+                json={"message": "can you show me calendar events"},
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()["response"]
+        self.assertEqual(payload["source"], "Calendar events")
+        self.assertEqual(payload["answer"], "Here are calendar events:")
+
+    def test_chatbot_vendor_count_request(self):
+        client, _ = self.api_client()
+        headers = self.auth_headers(client)
+
+        response = client.post(
+            "/api/chat/assistant",
+            json={"message": "how many vendors do we have?"},
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()["response"]
+        self.assertEqual(payload["source"], "Vendors")
+        self.assertIn("active vendors", payload["answer"])
+        self.assertRegex(payload["answer"], r"You have \d+ active vendors visible for your access level\.")
+
+    def test_chatbot_understands_misspelled_vendor_details(self):
+        client, _ = self.api_client()
+        admin_headers = self.auth_headers(client)
+        create_vendor = client.post(
+            "/api/vendors",
+            json=self.vendor_payload(
+                vendor_name="Typo Food Vendor",
+                contact_person="Tyra",
+                email="typo.food@example.com",
+                contact_details="9876500012",
+                service_provided="Food",
+                billing_amount=7000,
+                billing_cycle="Monthly",
+                end_date="2026-12-31",
+            ),
+            headers=admin_headers,
+        )
+        self.assertEqual(create_vendor.status_code, 200)
+
+        response = client.post(
+            "/api/chat/assistant",
+            json={"message": "give me food vendor deatils"},
+            headers=admin_headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()["response"]
+        self.assertEqual(payload["source"], "Vendors")
+        self.assertEqual(payload["bullets"], [])
+        typo_row = next(row for row in payload["table"]["rows"] if row["Vendor Name"] == "Typo Food Vendor")
+        self.assertEqual(typo_row["Contact"], "Tyra")
+        self.assertEqual(typo_row["Phone"], "9876500012")
+
+    def test_chatbot_understands_misspelled_recent_tickets(self):
+        client, _ = self.api_client()
+        headers = self.auth_headers(client)
+
+        response = client.post(
+            "/api/chat/assistant",
+            json={"message": "shoe me recent tikets"},
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()["response"]
+        self.assertEqual(payload["source"], "Tickets")
+        self.assertEqual(payload["answer"], "Here are recent tickets:")
+        self.assertTrue(payload["bullets"])
+
+    def test_chatbot_ticket_history_includes_past_tickets(self):
+        client, _ = self.api_client()
+        headers = self.auth_headers(client)
+
+        response = client.post(
+            "/api/chat/assistant",
+            json={"message": "can you give me ticket history"},
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()["response"]
+        self.assertEqual(payload["source"], "Tickets")
+        self.assertEqual(payload["answer"], "Here is your ticket history:")
+        statuses = {row["Status"] for row in payload["table"]["rows"]}
+        self.assertTrue({"Resolved", "Open"}.intersection(statuses))
+
+    def test_chatbot_uses_previous_ticket_context_for_earlier_history(self):
+        client, _ = self.api_client()
+        headers = self.auth_headers(client)
+
+        response = client.post(
+            "/api/chat/assistant",
+            json={
+                "message": "I am not talking about. I want earlier history",
+                "history": [
+                    {"role": "user", "text": "can you give me ticket history"},
+                    {"role": "assistant", "text": "Here is your ticket history:", "source": "Tickets"},
+                ],
+            },
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()["response"]
+        self.assertEqual(payload["source"], "Tickets")
+        self.assertEqual(payload["answer"], "Here is your ticket history:")
+        self.assertIn("table", payload)
+
+    def test_chatbot_understands_misspelled_ticket_creation(self):
+        client, _ = self.api_client()
+        headers = self.auth_headers(client, "employee@company.com", "employee123")
+
+        response = client.post(
+            "/api/chat/assistant",
+            json={"message": "create tikcet for laptop issue"},
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()["response"]
+        self.assertEqual(payload["source"], "Ticket agent")
+        self.assertTrue(payload["created_record_id"].startswith("IT-"))
+
+    def test_chatbot_deepinfra_failure_falls_back_to_local_intent(self):
+        with (
+            patch.object(settings, "ai_provider", "deepinfra"),
+            patch.object(settings, "deepinfra_api_key", "df-" + ("x" * 32)),
+            patch.object(DeepInfraChatClient, "classify_intent", side_effect=RuntimeError("DeepInfra unavailable")),
+            patch.object(DeepInfraChatClient, "refine_response", side_effect=RuntimeError("DeepInfra unavailable")),
+        ):
+            client, _ = self.api_client()
+            headers = self.auth_headers(client)
+            response = client.post(
+                "/api/chat/assistant",
+                json={"message": "sho me recent tickets"},
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()["response"]
+        self.assertEqual(payload["source"], "Tickets")
+        self.assertEqual(payload["answer"], "Here are recent tickets:")
+
+    def test_chatbot_employee_ticket_status_is_scoped_to_own_tickets(self):
+        client, _ = self.api_client()
+        headers = self.auth_headers(client, "employee@company.com", "employee123")
+
+        own_response = client.post(
+            "/api/chat/assistant",
+            json={"message": "what is the status of my ticket IT-1001?"},
+            headers=headers,
+        )
+        other_response = client.post(
+            "/api/chat/assistant",
+            json={"message": "what is the status of ticket IT-1003?"},
+            headers=headers,
+        )
+
+        self.assertEqual(own_response.status_code, 200)
+        self.assertEqual(own_response.json()["response"]["table"]["rows"][0]["Ticket ID"], "IT-1001")
+        self.assertIn("currently", own_response.json()["response"]["answer"])
+        self.assertEqual(other_response.json()["response"]["answer"], "I could not find that ticket for your access level.")
+
+    def test_chatbot_ticket_status_update_requires_confirmation(self):
+        client, _ = self.api_client()
+        headers = self.auth_headers(client)
+
+        request = client.post(
+            "/api/chat/assistant",
+            json={"message": "resolve ticket IT-1001"},
+            headers=headers,
+        )
+
+        self.assertEqual(request.status_code, 200)
+        payload = request.json()["response"]
+        self.assertTrue(payload["confirmation_required"])
+        self.assertEqual(payload["action"]["type"], "update_ticket_status")
+        self.assertEqual(payload["action"]["payload"]["ticket_id"], "IT-1001")
+        self.assertEqual(payload["action"]["payload"]["status"], "Resolved")
+
+        confirm = client.post(
+            "/api/chat/assistant",
+            json={"message": "Confirm", "action": payload["action"]},
+            headers=headers,
+        )
+
+        self.assertEqual(confirm.status_code, 200)
+        confirmed = confirm.json()["response"]
+        self.assertIn("Confirmed and updated IT-1001 to Resolved", confirmed["answer"])
+        self.assertEqual(confirmed["table"]["rows"][0]["Status"], "Resolved")
+
+    def test_chatbot_it_manager_last_5_inventory_updates(self):
+        client, _ = self.api_client()
+        headers = self.auth_headers(client, "it@company.com", "it123")
+
+        response = client.post(
+            "/api/chat/assistant",
+            json={"message": "give last 5 inventory updates"},
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()["response"]
+        self.assertEqual(payload["source"], "Inventory")
+        self.assertEqual(payload["answer"], "Here are the last 5 inventory updates:")
+        self.assertLessEqual(len(payload["table"]["rows"]), 5)
+        self.assertIn("Serial No.", payload["table"]["columns"])
+
+    def test_chatbot_finance_manager_expenses_month_wise(self):
+        client, _ = self.api_client()
+        headers = self.auth_headers(client, "finance@company.com", "finance123")
+
+        response = client.post(
+            "/api/chat/assistant",
+            json={"message": "tell me expenses month wise"},
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()["response"]
+        self.assertEqual(payload["source"], "Expenses")
+        self.assertEqual(payload["answer"], "Here are the month-wise expense totals:")
+        self.assertIn("Month", payload["table"]["columns"])
+        self.assertIn("Total", payload["table"]["columns"])
+
+    def test_chatbot_finance_manager_expenses_by_category_and_pending(self):
+        client, _ = self.api_client()
+        headers = self.auth_headers(client, "finance@company.com", "finance123")
+
+        by_category = client.post(
+            "/api/chat/assistant",
+            json={"message": "show expense by category"},
+            headers=headers,
+        )
+        pending = client.post(
+            "/api/chat/assistant",
+            json={"message": "show pending expenses"},
+            headers=headers,
+        )
+
+        self.assertEqual(by_category.status_code, 200)
+        category_payload = by_category.json()["response"]
+        self.assertEqual(category_payload["source"], "Expenses")
+        self.assertEqual(category_payload["answer"], "Here are expenses by category:")
+        self.assertIn("Category", category_payload["table"]["columns"])
+        self.assertIn("Total", category_payload["table"]["columns"])
+
+        self.assertEqual(pending.status_code, 200)
+        pending_payload = pending.json()["response"]
+        self.assertEqual(pending_payload["source"], "Expenses")
+        self.assertIn("pending", pending_payload["answer"].lower())
+        self.assertIn("Expense", pending_payload["table"]["columns"])
+        self.assertIn("Amount", pending_payload["table"]["columns"])
+
+    def test_chatbot_action_agent_blocks_unauthorized_request(self):
+        client, _ = self.api_client()
+        headers = self.auth_headers(client, "employee@company.com", "employee123")
+
+        response = client.post(
+            "/api/chat/assistant",
+            json={"message": "how much expenses happened last month?"},
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["response"]["answer"], "You do not have access to that information.")
 
     def test_mock_email_send_creates_communication_log(self):
         client, _ = self.api_client()
@@ -810,6 +1204,83 @@ class VendorWorkflowTest(unittest.TestCase):
             headers=employee_headers,
         )
         self.assertEqual(employee_send_test.status_code, 200)
+
+    def test_google_email_start_reports_missing_oauth_config(self):
+        client, _ = self.api_client()
+        headers = self.auth_headers(client)
+
+        with patch.object(settings, "google_client_id", ""), patch.object(settings, "google_client_secret", ""), patch.object(settings, "google_redirect_uri", ""):
+            response = client.get("/api/connectors/google/start", headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["configured"])
+        self.assertEqual(response.json()["message"], "Google email connection is not configured yet.")
+
+    def test_google_email_start_returns_authorization_url_when_configured(self):
+        client, _ = self.api_client()
+        headers = self.auth_headers(client)
+
+        with patch.object(settings, "google_client_id", "client-id"), patch.object(settings, "google_client_secret", "secret"), patch.object(settings, "google_redirect_uri", "http://127.0.0.1:8000/api/connectors/google/callback"):
+            response = client.get("/api/connectors/google/start", headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["configured"])
+        authorization_url = response.json()["authorization_url"]
+        self.assertIn("https://accounts.google.com/o/oauth2/v2/auth", authorization_url)
+        self.assertIn("gmail.send", authorization_url)
+
+    def test_gmail_connector_tokens_are_not_exposed(self):
+        client, app = self.api_client()
+        headers = self.auth_headers(client)
+        admin_user = app.state.repository.get_user_by_email("admin@company.com")
+        app.state.repository.upsert_connector(
+            admin_user["id"],
+            "email",
+            "Gmail",
+            "connected",
+            "Email",
+            {
+                "connected_email": "admin@gmail.com",
+                "connected_at": "2026-05-12T08:00:00+00:00",
+                "access_token": "secret-access-token",
+                "refresh_token": "secret-refresh-token",
+                "id_token": "secret-id-token",
+            },
+        )
+
+        response = client.get("/api/connectors", headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        email_connector = next(item for item in response.json()["connectors"] if item["connector_type"] == "email")
+        self.assertEqual(email_connector["provider"], "Gmail")
+        self.assertEqual(email_connector["status"], "connected")
+        self.assertEqual(email_connector["config"]["connected_email"], "admin@gmail.com")
+        self.assertTrue(email_connector["config"]["has_google_access_token"])
+        self.assertNotIn("access_token", email_connector["config"])
+        self.assertNotIn("refresh_token", email_connector["config"])
+        self.assertNotIn("id_token", email_connector["config"])
+
+    def test_google_configured_email_send_requires_connected_gmail(self):
+        client, _ = self.api_client()
+        headers = self.auth_headers(client)
+
+        with patch.object(settings, "google_client_id", "client-id"), patch.object(settings, "google_client_secret", "secret"), patch.object(settings, "google_redirect_uri", "http://127.0.0.1:8000/api/connectors/google/callback"):
+            response = client.post(
+                "/api/communications/send-email",
+                json={
+                    "recipient_name": "Rahul",
+                    "recipient_email": "rahul@example.com",
+                    "subject": "Gmail required",
+                    "message_body": "Please review.",
+                    "related_module": "settings",
+                    "related_record_id": "gmail-required",
+                    "channel": "email",
+                },
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "Please connect your email in Settings first.")
 
     def test_send_uses_current_user_connector_and_role_permissions(self):
         client, _ = self.api_client()
@@ -1453,7 +1924,7 @@ class VendorWorkflowTest(unittest.TestCase):
         self.assertEqual(status_update.json()["ticket"]["status"], "Resolved")
         self.assertEqual(blocked_update.status_code, 403)
 
-    def test_finance_manager_can_manage_finance_admin_tickets_but_not_it_tickets(self):
+    def test_finance_manager_can_edit_finance_admin_tickets_but_not_change_status(self):
         client, _ = self.api_client()
         headers = self.auth_headers(client, "finance@company.com", "finance123")
         tickets = client.get("/api/tickets", headers=headers).json()["tickets"]
@@ -1461,14 +1932,37 @@ class VendorWorkflowTest(unittest.TestCase):
         admin_ticket_ids = {ticket["ticket_id"] for ticket in tickets}
         self.assertNotIn("IT-1001", admin_ticket_ids)
 
-        admin_update = client.patch(
+        edit_payload = {
+            "ticket_type": admin_ticket["ticket_type"],
+            "title": "Vendor invoice follow-up updated",
+            "description": admin_ticket["description"],
+            "category": admin_ticket["category"],
+            "priority": admin_ticket["priority"],
+            "status": admin_ticket["status"],
+            "due_date": admin_ticket["due_date"] or None,
+            "approval_required": admin_ticket["approval_required"],
+        }
+        edit_update = client.put(
+            f"/api/tickets/{admin_ticket['id']}",
+            json=edit_payload,
+            headers=headers,
+        )
+        status_patch = client.patch(
             f"/api/tickets/{admin_ticket['id']}/status",
             json={"status": "In Progress"},
             headers=headers,
         )
+        status_put = client.put(
+            f"/api/tickets/{admin_ticket['id']}",
+            json={**edit_payload, "status": "In Progress"},
+            headers=headers,
+        )
 
-        self.assertEqual(admin_update.status_code, 200)
-        self.assertEqual(admin_update.json()["ticket"]["status"], "In Progress")
+        self.assertEqual(edit_update.status_code, 200)
+        self.assertEqual(edit_update.json()["ticket"]["title"], "Vendor invoice follow-up updated")
+        self.assertEqual(edit_update.json()["ticket"]["status"], admin_ticket["status"])
+        self.assertEqual(status_patch.status_code, 403)
+        self.assertEqual(status_put.status_code, 403)
 
     def test_finance_manager_can_view_finance_related_admin_tickets(self):
         client, _ = self.api_client()
@@ -1727,10 +2221,147 @@ class VendorWorkflowTest(unittest.TestCase):
         self.assertEqual(preview["rows"][0]["item"]["category"], "Onboarding Equipment")
         self.assertFalse(preview["errors"])
 
+    def test_inventory_import_preview_accepts_missing_optional_new_columns(self):
+        client, _ = self.api_client()
+        headers = self.auth_headers(client)
+        csv_content = (
+            "Employee,Serial Number,Model Number,RAM,Office Location\n"
+            "Asha Mehta,DL-5440-099,Latitude 5440,16 GB,Pune\n"
+        ).encode("utf-8")
+
+        response = client.post(
+            "/api/inventory/import/preview",
+            json=self.inventory_import_payload("inventory-flexible.csv", csv_content),
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        preview = response.json()
+        self.assertFalse(preview["errors"])
+        self.assertEqual(preview["detected_columns"], ["Employee name", "Serial No.", "Model No.", "RAM", "Location"])
+        self.assertEqual(preview["header_row_number"], 1)
+        self.assertIn("Missing optional columns defaulted: Disk, Status, Notes", preview["warnings"])
+        item = preview["rows"][0]["item"]
+        self.assertEqual(item["employee_name"], "Asha Mehta")
+        self.assertEqual(item["serial_no"], "DL-5440-099")
+        self.assertEqual(item["model_no"], "Latitude 5440")
+        self.assertEqual(item["ram"], "16 GB")
+        self.assertEqual(item["disk"], "")
+        self.assertEqual(item["location"], "Pune")
+        self.assertEqual(item["status"], "In Use")
+        self.assertEqual(item["notes"], "")
+
+    def test_inventory_import_preview_detects_headers_after_title_rows(self):
+        client, _ = self.api_client()
+        headers = self.auth_headers(client)
+        rows = [
+            ["GP Employee data 1"],
+            ["Generated report", "", "", ""],
+            ["Name", "Service Tag", "Model", "Memory", "Comments"],
+            ["Geeta Pawar", "ST-GP-778", "Latitude 7440", "16 GB", "Assigned replacement laptop"],
+        ]
+
+        response = client.post(
+            "/api/inventory/import/preview",
+            json=self.inventory_import_payload("GP Employee data 1.xlsx", self.make_xlsx(rows)),
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        preview = response.json()
+        self.assertFalse(preview["errors"])
+        self.assertEqual(preview["header_row_number"], 3)
+        self.assertEqual(preview["detected_columns"], ["Employee name", "Serial No.", "Model No.", "RAM", "Notes"])
+        self.assertIn("Missing optional columns defaulted: Disk, Location, Status", preview["warnings"])
+        item = preview["rows"][0]["item"]
+        self.assertEqual(item["employee_name"], "Geeta Pawar")
+        self.assertEqual(item["serial_no"], "ST-GP-778")
+        self.assertEqual(item["model_no"], "Latitude 7440")
+        self.assertEqual(item["ram"], "16 GB")
+        self.assertEqual(item["status"], "In Use")
+        self.assertEqual(item["notes"], "Assigned replacement laptop")
+
+    def test_inventory_import_accepts_gp_employee_excel_headers_and_all_rows(self):
+        client, _ = self.api_client()
+        headers = self.auth_headers(client)
+        rows = [
+            ["GP Employee data 1"],
+            ["Num", "Name's", "Sr. No.", '"Laptop" Brand', "RAM", "Location"],
+        ]
+        for index in range(1, 62):
+            rows.append([str(index), f"Employee {index}", f"SR-{index:03d}", f"Dell Latitude {index}", "16 GB", "Pune"])
+
+        preview_response = client.post(
+            "/api/inventory/import/preview",
+            json=self.inventory_import_payload("GP Employee data 1.xlsx", self.make_xlsx(rows)),
+            headers=headers,
+        )
+
+        self.assertEqual(preview_response.status_code, 200)
+        preview = preview_response.json()
+        self.assertFalse(preview["errors"])
+        self.assertEqual(preview["header_row_number"], 2)
+        self.assertEqual(preview["detected_columns"], ["Employee name", "Serial No.", "Model No.", "RAM", "Location"])
+        self.assertEqual(len(preview["rows"]), 61)
+        self.assertIn("Missing optional columns defaulted: Disk, Status, Notes", preview["warnings"])
+        first_item = preview["rows"][0]["item"]
+        self.assertEqual(first_item["employee_name"], "Employee 1")
+        self.assertEqual(first_item["serial_no"], "SR-001")
+        self.assertEqual(first_item["model_no"], "Dell Latitude 1")
+        self.assertEqual(first_item["ram"], "16 GB")
+        self.assertEqual(first_item["disk"], "")
+        self.assertEqual(first_item["location"], "Pune")
+        self.assertEqual(first_item["status"], "In Use")
+        self.assertEqual(first_item["notes"], "")
+
+        import_response = client.post(
+            "/api/inventory/imports",
+            json={"filename": "GP Employee data 1.xlsx", "items": [row["item"] for row in preview["rows"]]},
+            headers=headers,
+        )
+
+        self.assertEqual(import_response.status_code, 200)
+        payload = import_response.json()
+        self.assertEqual(payload["import"]["successful_rows"], 61)
+        self.assertEqual(payload["import"]["failed_rows"], 0)
+        self.assertEqual(payload["import"]["status"], "Completed")
+
+    def test_inventory_import_confirm_saves_defaults_for_missing_optional_new_columns(self):
+        client, _ = self.api_client()
+        headers = self.auth_headers(client)
+        csv_content = (
+            "Assigned To,Asset Serial,Model,Memory\n"
+            "Ravi Patil,HP-840-778,EliteBook 840,8 GB\n"
+        ).encode("utf-8")
+        preview = client.post(
+            "/api/inventory/import/preview",
+            json=self.inventory_import_payload("inventory-flexible.csv", csv_content),
+            headers=headers,
+        ).json()
+
+        response = client.post(
+            "/api/inventory/imports",
+            json={"filename": "inventory-flexible.csv", "items": [preview["rows"][0]["item"]]},
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["import"]["successful_rows"], 1)
+        imported_item = payload["inventory_items"][0]
+        self.assertEqual(imported_item["employee_name"], "Ravi Patil")
+        self.assertEqual(imported_item["serial_no"], "HP-840-778")
+        self.assertEqual(imported_item["model_no"], "EliteBook 840")
+        self.assertEqual(imported_item["ram"], "8 GB")
+        self.assertEqual(imported_item["disk"], "")
+        self.assertEqual(imported_item["location"], "")
+        self.assertEqual(imported_item["status"], "In Use")
+        self.assertEqual(imported_item["notes"], "")
+
     def test_inventory_import_preview_missing_required_columns_shows_template_message(self):
         client, _ = self.api_client()
         headers = self.auth_headers(client)
-        csv_content = "Name,Qty\nDesk Lamp,5\n".encode("utf-8")
+        csv_content = "Unrelated,Another\nDesk Lamp,5\n".encode("utf-8")
 
         response = client.post(
             "/api/inventory/import/preview",
@@ -2605,10 +3236,97 @@ class VendorWorkflowTest(unittest.TestCase):
         content = env_example.read_text()
 
         self.assertIn("OPENAI_API_KEY=", content)
+        self.assertIn("AI_PROVIDER=deepinfra", content)
+        self.assertIn("DEEPINFRA_API_KEY=", content)
+        self.assertIn("DEEPINFRA_MODEL=deepseek-ai/DeepSeek-V3", content)
         self.assertNotIn("replace_with_your_openai_api_key", content)
         for line in content.splitlines():
             if line.startswith("OPENAI_API_KEY="):
                 self.assertEqual(line, "OPENAI_API_KEY=")
+            if line.startswith("DEEPINFRA_API_KEY="):
+                self.assertEqual(line, "DEEPINFRA_API_KEY=")
+
+    def test_placeholder_deepinfra_api_key_is_treated_as_missing(self):
+        with patch.dict(os.environ, {"DEEPINFRA_API_KEY": "PASTE_YOUR_DEEPINFRA_API_KEY_HERE"}):
+            self.assertEqual(deepinfra_api_key_from_env(), "")
+
+    def test_deepinfra_client_requires_provider_and_key(self):
+        class MissingKeySettings:
+            ai_provider = "deepinfra"
+            deepinfra_api_key = ""
+            deepinfra_model = "deepseek-ai/DeepSeek-V3"
+
+        class MockProviderSettings:
+            ai_provider = "mock"
+            deepinfra_api_key = "df-" + ("x" * 32)
+            deepinfra_model = "deepseek-ai/DeepSeek-V3"
+
+        class DisabledProviderSettings:
+            ai_provider = "disabled"
+            deepinfra_api_key = "df-" + ("x" * 32)
+            deepinfra_model = "deepseek-ai/DeepSeek-V3"
+
+        class DeepInfraSettings:
+            ai_provider = "deepinfra"
+            deepinfra_api_key = "df-" + ("x" * 32)
+            deepinfra_model = "deepseek-ai/DeepSeek-V3"
+
+        self.assertIsNone(get_deepinfra_client(MissingKeySettings))
+        self.assertIsNone(get_deepinfra_client(DisabledProviderSettings))
+        self.assertIsNone(get_deepinfra_client(MockProviderSettings))
+        client = get_deepinfra_client(DeepInfraSettings)
+        self.assertIsInstance(client, DeepInfraChatClient)
+        self.assertEqual(client.model, "deepseek-ai/DeepSeek-V3")
+
+    def test_deepinfra_client_uses_openai_compatible_chat_endpoint(self):
+        captured = {}
+
+        class DummyResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps({
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps({
+                                    "intent": "open_tickets",
+                                    "confidence": 0.91,
+                                    "entities": {},
+                                    "required_role_scope": "tickets",
+                                    "action_type": "fetch",
+                                    "missing_fields": [],
+                                    "confirmation_required": False,
+                                })
+                            }
+                        }
+                    ]
+                }).encode("utf-8")
+
+        def fake_urlopen(request, timeout=0):
+            captured["url"] = request.full_url
+            captured["timeout"] = timeout
+            captured["headers"] = dict(request.header_items())
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            return DummyResponse()
+
+        client = DeepInfraChatClient(api_key="df-test-key", model="deepseek-ai/DeepSeek-V3")
+        with patch("urllib.request.urlopen", fake_urlopen):
+            result = client.classify_intent("show open tickets", ["open_tickets", "unsupported"])
+
+        self.assertEqual(captured["url"], "https://api.deepinfra.com/v1/openai/chat/completions")
+        self.assertEqual(captured["headers"]["Authorization"], "Bearer df-test-key")
+        self.assertEqual(captured["payload"]["model"], "deepseek-ai/DeepSeek-V3")
+        self.assertEqual(result["intent"], "open_tickets")
+        self.assertGreater(result["confidence"], 0.9)
+
+    def test_deepinfra_json_parser_accepts_wrapped_json(self):
+        parsed = parse_json_object("Here is JSON:\n{\"answer\": \"ok\", \"bullets\": []}")
+        self.assertEqual(parsed["answer"], "ok")
 
     def test_agent_plan_endpoint_returns_structured_plan(self):
         client, _ = self.api_client()

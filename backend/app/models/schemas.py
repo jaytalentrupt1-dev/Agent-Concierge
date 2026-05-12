@@ -27,6 +27,7 @@ class CommandRequest(BaseModel):
 
 class ChatbotRequest(BaseModel):
     message: str = Field(min_length=1, max_length=1000)
+    history: list[dict[str, Any]] = Field(default_factory=list)
 
     @field_validator("message")
     @classmethod
@@ -374,7 +375,7 @@ class InventoryItemRequest(BaseModel):
     quantity: int = Field(default=1, ge=0)
     unit: str = Field(default="unit", max_length=40)
     condition: str = Field(default="Good", max_length=80)
-    location: str = Field(min_length=2, max_length=160)
+    location: str = Field(default="", max_length=160)
     assigned_to: str = Field(default="", max_length=160)
     department: str = Field(default="", max_length=120)
     purchase_date: date | None = None
@@ -425,19 +426,8 @@ class InventoryItemRequest(BaseModel):
     def require_inventory_identity(self):
         has_new_shape = any([self.employee_name, self.serial_no, self.model_no, self.ram, self.disk])
         if has_new_shape:
-            missing = []
-            if not self.employee_name:
-                missing.append("employee_name")
-            if not self.serial_no:
-                missing.append("serial_no")
-            if not self.model_no:
-                missing.append("model_no")
-            if not self.ram:
-                missing.append("ram")
-            if not self.disk:
-                missing.append("disk")
-            if missing:
-                raise ValueError(f"Missing required inventory fields: {', '.join(missing)}")
+            if not any([self.employee_name, self.serial_no, self.model_no]):
+                raise ValueError("At least one of employee_name, serial_no, or model_no is required")
         elif not self.item_name:
             raise ValueError("Item name is required")
         return self
