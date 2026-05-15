@@ -9,9 +9,11 @@ import re
 import secrets
 import urllib.parse
 import urllib.request
+import zipfile
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
+from xml.etree import ElementTree
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
@@ -509,8 +511,26 @@ def create_app(database_path: str | None = None) -> FastAPI:
             return created_by_user
         return False
 
+    def task_is_overdue(task: dict) -> bool:
+        due_value = str(task.get("due_date") or "").strip()
+        if not due_value:
+            return False
+        status = str(task.get("status") or "").strip().lower()
+        if status in {"completed", "resolved", "closed", "cancelled", "canceled"}:
+            return False
+        try:
+            due_date = datetime.fromisoformat(due_value[:10]).date()
+        except ValueError:
+            return False
+        return due_date < datetime.now(timezone.utc).date()
+
+    def task_with_status_flags(task: dict) -> dict:
+        enriched = dict(task)
+        enriched["overdue"] = task_is_overdue(task)
+        return enriched
+
     def visible_tasks_for(user: dict) -> list[dict]:
-        return [task for task in repository.list_tasks() if can_view_task(user, task)]
+        return [task_with_status_flags(task) for task in repository.list_tasks() if can_view_task(user, task)]
 
     def create_task_assignment_notification(task: dict, actor: dict) -> None:
         if not task.get("assigned_user_id"):
@@ -620,6 +640,25 @@ def create_app(database_path: str | None = None) -> FastAPI:
             key = str(item.get(field) or "Unassigned")
             counts[key] = counts.get(key, 0) + 1
         return [{"name": key, "value": counts[key]} for key in sorted(counts)]
+
+    def task_status_chart(tasks: list[dict]) -> list[dict]:
+        statuses = ["Open", "In Progress", "Completed", "Overdue", "Waiting Approval"]
+        counts = {status: 0 for status in statuses}
+        aliases = {
+            "open": "Open",
+            "in progress": "In Progress",
+            "completed": "Completed",
+            "waiting approval": "Waiting Approval",
+            "pending approval": "Waiting Approval",
+            "pending": "Waiting Approval",
+        }
+        for task in tasks:
+            if task_is_overdue(task):
+                counts["Overdue"] += 1
+            status = aliases.get(str(task.get("status") or "").strip().lower())
+            if status:
+                counts[status] += 1
+        return [{"name": status, "value": counts[status]} for status in statuses]
 
     def sum_chart(items: list[dict], group_field: str, value_field: str) -> list[dict]:
         totals: dict[str, float] = {}
@@ -876,7 +915,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
         if can_view_all(user):
             return [
                 dashboard_chart_payload("tickets_by_status", "Tickets by Status", "bar", count_chart(tickets, "status")),
-                dashboard_chart_payload("tasks_by_status", "Tasks by Status", "bar", count_chart(tasks, "status")),
+                dashboard_chart_payload("tasks_by_status", "Tasks by Status", "bar", task_status_chart(tasks)),
                 dashboard_chart_payload("expenses_by_month", "Expenses by Month", "line", monthly_sum_chart(expenses, "expense_date", "amount"), "currency"),
                 dashboard_chart_payload("inventory_by_status", "Inventory by Status", "pie", count_chart(inventory_items, "status")),
             ]
@@ -951,7 +990,10 @@ def create_app(database_path: str | None = None) -> FastAPI:
         reports = visible_reports_for(user) if not can_view_own_only(user) else visible_reports_for(user)
 
         open_ticket_count = len([ticket for ticket in tickets if ticket.get("status") not in {"Resolved", "Closed"}])
-        open_task_count = len([task for task in tasks if task.get("status") not in {"Completed", "Cancelled"}])
+        open_task_count = len([
+            task for task in tasks
+            if str(task.get("status") or "").strip().lower() not in {"completed", "resolved", "closed", "cancelled", "canceled"}
+        ])
         completed_task_count = len([task for task in tasks if task.get("status") == "Completed"])
         waiting_ticket_count = len([
             ticket for ticket in tickets
@@ -1065,7 +1107,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
         "a", "about", "all", "an", "and", "answer", "any", "are", "as", "ask", "at", "by", "can", "count",
         "current", "dashboard", "data", "details", "do", "find", "for", "from", "get", "give", "has", "have",
         "earlier", "help", "history", "how", "i", "in", "info", "information", "is", "it", "list", "many", "me", "monthly", "my", "of",
-        "month", "not", "number", "older", "on", "open", "overview", "past", "please", "recent", "show", "summary", "talking",
+        "month", "more", "not", "number", "older", "on", "open", "overview", "past", "please", "recent", "show", "status", "summary", "talking",
         "tell", "the", "this", "to", "today", "total", "visible", "want", "what", "which", "with", "you",
     }
     CHATBOT_DOMAIN_TERMS = {
@@ -1341,11 +1383,20 @@ def create_app(database_path: str | None = None) -> FastAPI:
         result = conci_agent.classify(text)
         return "" if result.intent == "unsupported" else result.intent
 
-    def chatbot_external_intent_result(text: str) -> dict:
+    def chatbot_external_intent_result(text: str, history: list[dict] | None = None) -> dict:
         allowed = conci_agent.intent_ids()
+        topic = chatbot_history_topic(history)
+        classifier_text = text
+        if topic:
+            classifier_text = (
+                f"Previous chat topic: {topic}. "
+                f"Current user message: {text}. "
+                "If the current message is a clarification like earlier history, show more, not this, or only a filter, "
+                "resolve it using the previous topic."
+            )
         if deepinfra_client:
             try:
-                return deepinfra_client.classify_intent(text, allowed)
+                return deepinfra_client.classify_intent(classifier_text, allowed)
             except Exception:
                 return {}
         if not (settings.use_openai_ai and settings.openai_api_key):
@@ -1360,7 +1411,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 "Return strict JSON with keys: intent, confidence, entities, "
                 "required_role_scope, action_type, missing_fields, confirmation_required. "
                 f"Allowed intent ids: {', '.join(allowed)}. Use unsupported when unsure.\n"
-                f"Message: {text}"
+                f"Message: {classifier_text}"
             )
             response = client.responses.create(model=settings.openai_model, input=prompt)
             parsed = json.loads(str(getattr(response, "output_text", "") or "").strip())
@@ -1414,7 +1465,8 @@ def create_app(database_path: str | None = None) -> FastAPI:
             phrase in normalized
             for phrase in [
                 "not talking", "i want", "earlier history", "earlier", "older", "previous", "past", "history",
-                "that history", "show history", "show earlier", "show older",
+                "that history", "show history", "show earlier", "show older", "show more", "more", "next",
+                "continue", "give all", "show all", "all of them", "only",
             ]
         )
         if has_explicit_domain or not is_clarification:
@@ -1479,18 +1531,17 @@ def create_app(database_path: str | None = None) -> FastAPI:
 
     def chatbot_detect_intent(message: str, history: list[dict] | None = None) -> tuple[str, str, dict]:
         normalized = chatbot_normalize_input(message)
+        openai_result = chatbot_external_intent_result(normalized, history)
+        external_intent = str(openai_result.get("intent") or "").strip() if openai_result else ""
         contextual_intent = chatbot_contextual_intent(normalized, history)
-        if contextual_intent:
-            intent_result = conci_agent.classify(normalized, openai_intent=contextual_intent)
-            return normalized, contextual_intent, intent_result.to_dict()
-        openai_result = chatbot_external_intent_result(normalized)
         priority_intent = chatbot_priority_local_intent(normalized)
-        external_intent = str(openai_result.get("intent") or "") if openai_result else None
         if priority_intent:
             external_intent = priority_intent
+        elif contextual_intent and external_intent in {"", "unsupported", "utility_date", "utility_time"}:
+            external_intent = contextual_intent
         intent_result = conci_agent.classify(
             normalized,
-            openai_intent=external_intent,
+            openai_intent=external_intent or None,
             openai_entities=openai_result.get("entities") if isinstance(openai_result.get("entities"), dict) else None,
         )
         return normalized, "" if intent_result.intent == "unsupported" else intent_result.intent, intent_result.to_dict()
@@ -1738,13 +1789,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
         return chatbot_ticket_bullets(waiting_tickets, 5) + chatbot_task_bullets(waiting_tasks, 5)
 
     def chatbot_overdue_tasks(tasks: list[dict]) -> list[dict]:
-        today = datetime.now(timezone.utc).date()
-        overdue = []
-        for task in tasks:
-            due_date = parse_date(task.get("due_date"))
-            if due_date and due_date.date() < today and task.get("status") not in {"Completed", "Cancelled"}:
-                overdue.append(task)
-        return overdue
+        return [task for task in tasks if task_is_overdue(task)]
 
     def chatbot_select_tickets(tickets: list[dict], text: str) -> list[dict]:
         selected = tickets
@@ -2112,6 +2157,14 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 chatbot_ticket_bullets([match], 1),
                 source="Tickets",
                 table=chatbot_ticket_table([match], 1),
+            )
+        matched_tickets = chatbot_select_tickets(tickets, text)
+        if matched_tickets and len(matched_tickets) < len(tickets):
+            return chatbot_response(
+                "Here is the matching ticket status:",
+                [],
+                source="Tickets",
+                table=chatbot_ticket_table(matched_tickets, min(len(matched_tickets), 8)),
             )
         pending = [
             ticket for ticket in tickets
@@ -3087,6 +3140,152 @@ def create_app(database_path: str | None = None) -> FastAPI:
             ])
         return output.getvalue()
 
+    def report_preview_columns(header_row: list[str]) -> list[str]:
+        columns: list[str] = []
+        seen: dict[str, int] = {}
+        for index, value in enumerate(header_row):
+            label = str(value or "").strip() or f"Column {index + 1}"
+            normalized = label.lower()
+            count = seen.get(normalized, 0) + 1
+            seen[normalized] = count
+            columns.append(label if count == 1 else f"{label} ({count})")
+        return columns or ["Column 1"]
+
+    def report_file_path(report: dict) -> Path:
+        return Path(report.get("stored_file_path", ""))
+
+    def report_media_type(report: dict) -> str:
+        return {
+            "CSV": "text/csv",
+            "XLSX": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "PDF": "application/pdf",
+            "TXT": "text/plain",
+            "MD": "text/markdown",
+            "DOCX": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "DOC": "application/msword",
+        }.get(str(report.get("file_type", "")).upper(), "application/octet-stream")
+
+    def report_preview_from_file(report: dict) -> dict:
+        file_path = report_file_path(report)
+        if not file_path.exists() or not file_path.is_file():
+            return report_unavailable_preview("File not found. Please re-upload the report.")
+
+        file_type = str(report.get("file_type", "")).upper()
+        if file_type == "PDF":
+            encoded_pdf = base64.b64encode(file_path.read_bytes()).decode("ascii")
+            return {
+                "preview_type": "pdf",
+                "columns": [],
+                "rows": [],
+                "row_count": 0,
+                "truncated": False,
+                "content_base64": encoded_pdf,
+                "mime_type": "application/pdf",
+                "message": "",
+            }
+        if file_type in {"TXT", "MD"}:
+            return report_text_preview(file_path, preview_type=file_type.lower())
+        if file_type == "DOCX":
+            return report_docx_preview(file_path)
+        if file_type == "DOC":
+            return report_unavailable_preview("Preview is not available for this file. Please download the report.")
+        if file_type not in {"CSV", "XLSX"}:
+            return report_unavailable_preview("Preview is not available for this file. Please download the report.")
+
+        content_base64 = base64.b64encode(file_path.read_bytes()).decode("ascii")
+        try:
+            raw_rows, parsed_type = parse_tabular_file(report.get("file_name", ""), content_base64)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        if not raw_rows:
+            return {
+                "preview_type": parsed_type,
+                "columns": [],
+                "rows": [],
+                "row_count": 0,
+                "truncated": False,
+                "message": "This report file is empty.",
+            }
+
+        columns = report_preview_columns(raw_rows[0])
+        body_rows = raw_rows[1:] if len(raw_rows) > 1 else []
+        max_preview_rows = 500
+        preview_rows = [
+            {
+                columns[index]: row[index].strip() if index < len(row) else ""
+                for index in range(len(columns))
+            }
+            for row in body_rows[:max_preview_rows]
+        ]
+        return {
+            "preview_type": parsed_type,
+            "columns": columns,
+            "rows": preview_rows,
+            "row_count": len(body_rows),
+            "truncated": len(body_rows) > max_preview_rows,
+            "message": "",
+        }
+
+    def report_unavailable_preview(message: str) -> dict:
+        return {
+            "preview_type": "unavailable",
+            "columns": [],
+            "rows": [],
+            "row_count": 0,
+            "truncated": False,
+            "message": message,
+        }
+
+    def report_text_preview(file_path: Path, *, preview_type: str) -> dict:
+        try:
+            text = file_path.read_text(encoding="utf-8-sig")
+        except UnicodeDecodeError:
+            text = file_path.read_text(encoding="latin-1", errors="replace")
+        lines = text.splitlines()
+        max_lines = 1000
+        return {
+            "preview_type": preview_type,
+            "columns": [],
+            "rows": [],
+            "row_count": len(lines),
+            "truncated": len(lines) > max_lines,
+            "text": "\n".join(lines[:max_lines]),
+            "message": "",
+        }
+
+    def report_docx_preview(file_path: Path) -> dict:
+        try:
+            with zipfile.ZipFile(file_path) as document:
+                xml = document.read("word/document.xml")
+        except (KeyError, zipfile.BadZipFile):
+            return report_unavailable_preview("Preview is not available for this file. Please download the report.")
+        try:
+            root = ElementTree.fromstring(xml)
+        except ElementTree.ParseError:
+            return report_unavailable_preview("Preview is not available for this file. Please download the report.")
+        paragraphs = []
+        for paragraph in root.iter():
+            if not str(paragraph.tag).endswith("}p") and paragraph.tag != "p":
+                continue
+            text = "".join(
+                node.text or ""
+                for node in paragraph.iter()
+                if str(node.tag).endswith("}t") or node.tag == "t"
+            ).strip()
+            if text:
+                paragraphs.append(text)
+        max_paragraphs = 500
+        return {
+            "preview_type": "docx",
+            "columns": [],
+            "rows": [],
+            "row_count": len(paragraphs),
+            "truncated": len(paragraphs) > max_paragraphs,
+            "text": "\n\n".join(paragraphs[:max_paragraphs]),
+            "message": "" if paragraphs else "No readable text was found in this DOCX file.",
+        }
+
     @app.get("/api/health")
     def health() -> dict:
         return {
@@ -3574,7 +3773,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 "actor_role": user["role"],
             },
         )
-        return {"task": task}
+        return {"task": task_with_status_flags(task)}
 
     @app.get("/api/tasks/{task_id}")
     def get_task(task_id: int, user: dict = Depends(current_user)) -> dict:
@@ -3583,7 +3782,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Task not found")
         if not can_view_task(user, task):
             raise HTTPException(status_code=403, detail="Task access not permitted")
-        return {"task": task}
+        return {"task": task_with_status_flags(task)}
 
     @app.put("/api/tasks/{task_id}")
     def update_task(
@@ -3611,7 +3810,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 "actor_role": user["role"],
             },
         )
-        return {"task": task}
+        return {"task": task_with_status_flags(task)}
 
     @app.patch("/api/tasks/{task_id}/status")
     def update_task_status(
@@ -3637,7 +3836,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 "actor_role": user["role"],
             },
         )
-        return {"task": task}
+        return {"task": task_with_status_flags(task)}
 
     @app.delete("/api/tasks/{task_id}")
     def delete_task(task_id: int, user: dict = Depends(current_user)) -> dict:
@@ -4177,12 +4376,36 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 "actor_role": user["role"],
             },
         )
-        media_type = {
-            "CSV": "text/csv",
-            "XLSX": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "PDF": "application/pdf",
-        }.get(report["file_type"], "application/octet-stream")
-        return FileResponse(file_path, media_type=media_type, filename=report["file_name"])
+        return FileResponse(file_path, media_type=report_media_type(report), filename=report["file_name"])
+
+    @app.get("/api/reports/{report_id}/preview")
+    def preview_report(report_id: int, user: dict = Depends(current_user)) -> dict:
+        report = repository.get_report(report_id)
+        if not report:
+            raise HTTPException(status_code=404, detail="Report not found")
+        if not can_view_report(user, report):
+            raise HTTPException(status_code=403, detail="Report preview not permitted")
+        return {
+            "report": report,
+            "preview": report_preview_from_file(report),
+        }
+
+    @app.get("/api/reports/{report_id}/preview-file")
+    def preview_report_file(report_id: int, user: dict = Depends(current_user)) -> FileResponse:
+        report = repository.get_report(report_id)
+        if not report:
+            raise HTTPException(status_code=404, detail="Report not found")
+        if not can_view_report(user, report):
+            raise HTTPException(status_code=403, detail="Report preview not permitted")
+        file_path = report_file_path(report)
+        if not file_path.exists() or not file_path.is_file():
+            raise HTTPException(status_code=404, detail="File not found. Please re-upload the report.")
+        return FileResponse(
+            file_path,
+            media_type=report_media_type(report),
+            filename=report["file_name"],
+            content_disposition_type="inline",
+        )
 
     @app.delete("/api/reports/{report_id}")
     def delete_report(report_id: int, user: dict = Depends(current_user)) -> dict:

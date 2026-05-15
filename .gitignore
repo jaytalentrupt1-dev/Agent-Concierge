@@ -7,6 +7,7 @@ __pycache__/
 .venv/
 backend/.venv/
 backend/admin_agent.db
+backend/uploads/reports/RPT-1007-*
 node_modules/
 dist/
 frontend/dist/

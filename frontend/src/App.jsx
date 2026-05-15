@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  AlertCircle,
   BarChart3,
   Bell,
   Bot,
@@ -46,6 +47,7 @@ import {
   MessageCircle,
   Phone,
   Paperclip,
+  Square,
   Trash2,
   UserRound,
   UsersRound
@@ -88,6 +90,8 @@ import {
   getInventoryImports,
   getInventoryItems,
   getNotifications,
+  getReportPreview,
+  getReportPreviewFile,
   getReports,
   getTasks,
   getTickets,
@@ -735,10 +739,64 @@ function taskBadgeClass(base, value) {
 }
 
 function isTaskOverdue(task) {
-  if (!task?.due_date || ["Completed", "Cancelled"].includes(task.status)) return false;
-  const due = new Date(`${String(task.due_date).slice(0, 10)}T23:59:59`);
-  if (Number.isNaN(due.getTime())) return false;
-  return due < new Date();
+  return Boolean(task?.overdue);
+}
+
+function normalizeTaskStatusForChart(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  const aliases = {
+    open: "Open",
+    "in progress": "In Progress",
+    completed: "Completed",
+    complete: "Completed",
+    "waiting approval": "Waiting Approval",
+    "pending approval": "Waiting Approval",
+    pending: "Waiting Approval"
+  };
+  return aliases[normalized] || "";
+}
+
+function taskStatusChartDataFromTasks(tasks = []) {
+  const statuses = ["Open", "In Progress", "Completed", "Overdue", "Waiting Approval"];
+  const counts = Object.fromEntries(statuses.map((status) => [status, 0]));
+  tasks.forEach((task) => {
+    const status = normalizeTaskStatusForChart(task?.status);
+    if (status) counts[status] += 1;
+    if (isTaskOverdue(task)) counts.Overdue += 1;
+  });
+  return statuses.map((status) => ({ name: status, value: counts[status] }));
+}
+
+function taskOpenCount(tasks = []) {
+  const closedStatuses = new Set(["completed", "resolved", "closed", "cancelled", "canceled"]);
+  return tasks.filter((task) => !closedStatuses.has(String(task?.status || "").trim().toLowerCase())).length;
+}
+
+function upsertTaskInList(tasks = [], task) {
+  if (!task?.id) return tasks;
+  const existingIndex = tasks.findIndex((item) => item.id === task.id);
+  if (existingIndex === -1) return [task, ...tasks];
+  return tasks.map((item) => (item.id === task.id ? task : item));
+}
+
+function dashboardWithTaskList(dashboard, tasks = []) {
+  if (!dashboard) return dashboard;
+  return {
+    ...dashboard,
+    tasks,
+    summary_cards: (dashboard.summary_cards || []).map((card) => {
+      if (card.id === "total_tasks") return { ...card, value: tasks.length };
+      if (card.id === "open_tasks") return { ...card, value: taskOpenCount(tasks) };
+      if (card.id === "completed_tasks") {
+        return { ...card, value: tasks.filter((task) => normalizeTaskStatusForChart(task.status) === "Completed").length };
+      }
+      return card;
+    }),
+    charts: (dashboard.charts || []).map((chart) => {
+      if (!dashboardIsTasksByStatusChart(chart)) return chart;
+      return { ...chart, data: taskStatusChartDataFromTasks(tasks) };
+    })
+  };
 }
 
 function normalizeInventoryStatus(status) {
@@ -892,9 +950,15 @@ function apiErrorMessage(err) {
   return err?.message || "Something went wrong. Please try again.";
 }
 
+function isAbortError(err) {
+  return err?.name === "AbortError" || /aborted/i.test(String(err?.message || ""));
+}
+
 function savedTheme() {
-  if (typeof window === "undefined") return "light";
-  return window.localStorage.getItem("admin_agent_theme") === "dark" ? "dark" : "light";
+  if (typeof window === "undefined") return "dark";
+  const storedTheme = window.localStorage.getItem("admin_agent_theme");
+  if (storedTheme === "light" || storedTheme === "dark") return storedTheme;
+  return "dark";
 }
 
 function App() {
@@ -932,11 +996,43 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [routeLoading, setRouteLoading] = useState(false);
   const [error, setError] = useState("");
+  const assistantStorageKey = dashboardAssistantSessionKey(currentUser);
+  const [assistantMessages, setAssistantMessages] = useState([]);
+  const [assistantDraft, setAssistantDraft] = useState("");
+  const [assistantAttachment, setAssistantAttachment] = useState(null);
+  const [assistantExpanded, setAssistantExpanded] = useState(false);
+  const [assistantClosed, setAssistantClosed] = useState(false);
+  const [assistantSending, setAssistantSending] = useState(false);
+  const activeChatRequestRef = useRef(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     window.localStorage.setItem("admin_agent_theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    if (!currentUser) {
+      activeChatRequestRef.current?.controller?.abort();
+      activeChatRequestRef.current = null;
+      setAssistantMessages([]);
+      setAssistantDraft("");
+      setAssistantAttachment(null);
+      setAssistantExpanded(false);
+      setAssistantClosed(false);
+      setAssistantSending(false);
+      return;
+    }
+    setAssistantMessages(readDashboardAssistantMessages(assistantStorageKey, currentUser, dashboard || {}));
+    setAssistantDraft(readDashboardAssistantDraft(assistantStorageKey));
+    setAssistantAttachment(null);
+    setAssistantExpanded(false);
+    setAssistantClosed(false);
+  }, [assistantStorageKey]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    writeDashboardAssistantState(assistantStorageKey, assistantMessages, assistantDraft);
+  }, [assistantStorageKey, assistantMessages, assistantDraft, currentUser]);
 
   function navigateToTab(tab, { replace = false } = {}) {
     const safeTab = tabRoutes[tab] ? tab : "dashboard";
@@ -971,12 +1067,14 @@ function App() {
   }
 
   async function refresh(userOverride = currentUser) {
-    const canLoadVendors = canAccessTab(userOverride, "vendors");
-    const canLoadExpenses = canAccessTab(userOverride, "expenses");
-    const canLoadInventory = canAccessTab(userOverride, "inventory");
-    const canLoadTravel = canAccessTab(userOverride, "travel");
-    const canLoadReports = canAccessTab(userOverride, "reports");
-    const canLoadTasks = canAccessTab(userOverride, "tasks");
+    const currentUserPayload = await getCurrentUser();
+    const effectiveUser = currentUserPayload.user || userOverride;
+    const canLoadVendors = canAccessTab(effectiveUser, "vendors");
+    const canLoadExpenses = canAccessTab(effectiveUser, "expenses");
+    const canLoadInventory = canAccessTab(effectiveUser, "inventory");
+    const canLoadTravel = canAccessTab(effectiveUser, "travel");
+    const canLoadReports = canAccessTab(effectiveUser, "reports");
+    const canLoadTasks = canAccessTab(effectiveUser, "tasks");
     const [dash, approvalPayload, auditPayload, healthPayload, taskPayload, ticketPayload, notificationPayload, vendorPayload, expensePayload, travelPayload, calendarPayload, travelSummaryPayload, reportPayload, inventoryPayload, inventoryImportsPayload] = await Promise.all([
       getDashboard(),
       getApprovals(),
@@ -994,11 +1092,14 @@ function App() {
       canLoadInventory ? getInventoryItems() : Promise.resolve({ inventory_items: [] }),
       canLoadInventory ? getInventoryImports() : Promise.resolve({ imports: [] })
     ]);
-    setDashboard(dash);
+    const nextTasks = taskPayload.tasks || [];
+    const nextDashboard = dashboardWithTaskList(dash, nextTasks);
+    setCurrentUser(effectiveUser);
+    setDashboard(nextDashboard);
     setApprovals(approvalPayload.approvals);
     setAuditLogs(auditPayload.audit_logs);
     setHealth(healthPayload);
-    setTasks(taskPayload.tasks || []);
+    setTasks(nextTasks);
     setTickets(ticketPayload.tickets);
     setNotifications(notificationPayload.notifications || []);
     setUnreadNotificationCount(notificationPayload.unread_count || 0);
@@ -1010,18 +1111,19 @@ function App() {
     setReports(reportPayload.reports);
     setInventoryItems(inventoryPayload.inventory_items);
     setInventoryImports(inventoryImportsPayload.imports);
-    if (userOverride?.role === "admin") {
+    if (effectiveUser?.role === "admin") {
       const userPayload = await getUsers();
       setUsers(userPayload.users);
     } else {
       setUsers([]);
     }
     return {
-      dashboard: dash,
+      currentUser: effectiveUser,
+      dashboard: nextDashboard,
       approvals: approvalPayload.approvals,
       auditLogs: auditPayload.audit_logs,
       health: healthPayload,
-      tasks: taskPayload.tasks || [],
+      tasks: nextTasks,
       tickets: ticketPayload.tickets,
       notifications: notificationPayload.notifications || [],
       vendors: vendorPayload.vendors,
@@ -1103,6 +1205,9 @@ function App() {
     } catch {
       // Local logout should still clear the client session if the server token expired.
     } finally {
+      activeChatRequestRef.current?.controller?.abort();
+      activeChatRequestRef.current = null;
+      setAssistantSending(false);
       setAuthToken("");
       setCurrentUser(null);
       setDashboard(null);
@@ -1256,6 +1361,18 @@ function App() {
     () => tickets.filter((item) => matchesSearch(item, search)),
     [tickets, search]
   );
+
+  function handleTaskSaved(task) {
+    const nextTasks = upsertTaskInList(tasks, task);
+    setTasks(nextTasks);
+    setDashboard((current) => dashboardWithTaskList(current, nextTasks));
+  }
+
+  function handleTaskDeleted(taskId) {
+    const nextTasks = tasks.filter((task) => task.id !== taskId);
+    setTasks(nextTasks);
+    setDashboard((current) => dashboardWithTaskList(current, nextTasks));
+  }
 
   const filteredExpenses = useMemo(
     () => expenses.filter((item) => matchesSearch(item, search)),
@@ -1502,7 +1619,14 @@ function App() {
 
         {canAccessActiveTab && activeTab === "dashboard" && (
           <OperationsDashboard
+            activeChatRequestRef={activeChatRequestRef}
             approvals={approvals}
+            assistantAttachment={assistantAttachment}
+            assistantClosed={assistantClosed}
+            assistantDraft={assistantDraft}
+            assistantExpanded={assistantExpanded}
+            assistantMessages={assistantMessages}
+            assistantSending={assistantSending}
             filteredApprovals={filteredApprovals}
             auditLogs={auditLogs}
             filteredAuditLogs={filteredAuditLogs}
@@ -1522,6 +1646,12 @@ function App() {
             onRouteMessageChange={setRouteMessage}
             onUpdated={refresh}
             onNavigate={navigateToTab}
+            setAssistantAttachment={setAssistantAttachment}
+            setAssistantClosed={setAssistantClosed}
+            setAssistantDraft={setAssistantDraft}
+            setAssistantExpanded={setAssistantExpanded}
+            setAssistantMessages={setAssistantMessages}
+            setAssistantSending={setAssistantSending}
             routeMessage={routeMessage}
             search={search}
             setError={setError}
@@ -1531,16 +1661,8 @@ function App() {
           <TasksView
             currentUser={currentUser}
             onChanged={refresh}
-            onTaskDeleted={(taskId) => {
-              setTasks((current) => current.filter((task) => task.id !== taskId));
-            }}
-            onTaskSaved={(task) => {
-              setTasks((current) => {
-                const existingIndex = current.findIndex((item) => item.id === task.id);
-                if (existingIndex === -1) return [task, ...current];
-                return current.map((item) => (item.id === task.id ? task : item));
-              });
-            }}
+            onTaskDeleted={handleTaskDeleted}
+            onTaskSaved={handleTaskSaved}
             setError={setError}
             tasks={filteredTasks}
           />
@@ -1806,7 +1928,14 @@ function LoginFeature({ icon: Icon, title, detail }) {
 }
 
 function OperationsDashboard({
+  activeChatRequestRef,
   approvals,
+  assistantAttachment,
+  assistantClosed,
+  assistantDraft,
+  assistantExpanded,
+  assistantMessages,
+  assistantSending,
   filteredApprovals,
   auditLogs,
   filteredAuditLogs,
@@ -1815,6 +1944,12 @@ function OperationsDashboard({
   filteredDashboard,
   onUpdated,
   onNavigate,
+  setAssistantAttachment,
+  setAssistantClosed,
+  setAssistantDraft,
+  setAssistantExpanded,
+  setAssistantMessages,
+  setAssistantSending,
   search,
   setError
 }) {
@@ -1828,28 +1963,11 @@ function OperationsDashboard({
   const travelRecords = dashboardData.travel_records || [];
   const inventoryItems = dashboardData.inventory_items || [];
   const vendorBillingDashboard = dashboardData.vendor_billing_dashboard;
-  const assistantStorageKey = dashboardAssistantSessionKey(currentUser);
-  const [assistantExpanded, setAssistantExpanded] = useState(false);
-  const [assistantClosed, setAssistantClosed] = useState(false);
-  const [assistantMessages, setAssistantMessages] = useState(() => readDashboardAssistantMessages(assistantStorageKey, currentUser, dashboardData));
-  const [assistantDraft, setAssistantDraft] = useState(() => readDashboardAssistantDraft(assistantStorageKey));
-  const [assistantAttachment, setAssistantAttachment] = useState(null);
   const [adminDashboardPanel, setAdminDashboardPanel] = useState("");
   const showCompactDashboardCards = ["admin", "it_manager", "finance_manager", "employee"].includes(role);
   const waitingTickets = tickets.filter((ticket) =>
     ticket.approval_required || ["Waiting Approval", "Pending Approval"].includes(ticket.status)
   );
-
-  useEffect(() => {
-    setAssistantMessages(readDashboardAssistantMessages(assistantStorageKey, currentUser, dashboardData));
-    setAssistantDraft(readDashboardAssistantDraft(assistantStorageKey));
-    setAssistantAttachment(null);
-    setAssistantExpanded(false);
-  }, [assistantStorageKey]);
-
-  useEffect(() => {
-    writeDashboardAssistantState(assistantStorageKey, assistantMessages, assistantDraft);
-  }, [assistantStorageKey, assistantMessages, assistantDraft]);
 
   useEffect(() => {
     setAdminDashboardPanel("");
@@ -1860,7 +1978,7 @@ function OperationsDashboard({
     setAssistantMessages(seedMessages);
     setAssistantDraft("");
     setAssistantAttachment(null);
-    writeDashboardAssistantState(assistantStorageKey, seedMessages, "");
+    writeDashboardAssistantState(dashboardAssistantSessionKey(currentUser), seedMessages, "");
   }
 
   if (!dashboard) {
@@ -1979,6 +2097,7 @@ function OperationsDashboard({
 
         {!assistantClosed && (
           <DashboardAIAssistantPanel
+            activeChatRequestRef={activeChatRequestRef}
             attachedFile={assistantAttachment}
             currentUser={currentUser}
             dashboardData={dashboardData}
@@ -1992,6 +2111,8 @@ function OperationsDashboard({
             onMessagesChange={setAssistantMessages}
             onRefreshContext={onUpdated}
             onResize={() => setAssistantExpanded((value) => !value)}
+            sending={assistantSending}
+            setSending={setAssistantSending}
           />
         )}
       </div>
@@ -2015,6 +2136,7 @@ function OperationsDashboard({
 }
 
 function DashboardAIAssistantPanel({
+  activeChatRequestRef,
   attachedFile,
   currentUser,
   dashboardData,
@@ -2027,19 +2149,40 @@ function DashboardAIAssistantPanel({
   onDraftChange,
   onMessagesChange,
   onRefreshContext,
-  onResize
+  onResize,
+  sending,
+  setSending
 }) {
-  const [sending, setSending] = useState(false);
   const [refreshingContext, setRefreshingContext] = useState(false);
+  const [refreshNotice, setRefreshNotice] = useState(null);
   const [editingMessage, setEditingMessage] = useState(null);
   const messagesRef = useRef(null);
   const fileInputRef = useRef(null);
+  const textareaRef = useRef(null);
+  const draftRef = useRef(draft);
   const suggestions = dashboardAssistantSuggestions(currentUser);
+
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
 
   useEffect(() => {
     if (!messagesRef.current) return;
     messagesRef.current.scrollTo({ top: messagesRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, sending, expanded]);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }, [draft, editingMessage, expanded]);
+
+  useEffect(() => {
+    if (!refreshNotice || refreshNotice.status === "loading") return undefined;
+    const timeout = window.setTimeout(() => setRefreshNotice(null), refreshNotice.status === "error" ? 5200 : 2800);
+    return () => window.clearTimeout(timeout);
+  }, [refreshNotice]);
 
   async function sendMessage(messageText, options = {}) {
     const cleanMessage = messageText.trim();
@@ -2062,9 +2205,11 @@ function DashboardAIAssistantPanel({
     ]);
     onDraftChange((currentDraft) => (currentDraft.trim() === cleanMessage ? "" : currentDraft));
 
+    const controller = new AbortController();
+    activeChatRequestRef.current = { controller, draftText: cleanMessage };
     setSending(true);
     try {
-      const response = await askChatbot(cleanMessage, selectedAttachment?.file || null, action, history);
+      const response = await askChatbot(cleanMessage, selectedAttachment?.file || null, action, history, { signal: controller.signal });
       const reply = response.response || response || {};
       onMessagesChange((current) => [
         ...current,
@@ -2084,11 +2229,13 @@ function DashboardAIAssistantPanel({
           time: formatAssistantTime(new Date())
         }
       ]);
+      refreshAfterAssistantMutation(reply);
       if (selectedAttachment) {
         onAttachmentChange(null);
         if (fileInputRef.current) fileInputRef.current.value = "";
       }
     } catch (err) {
+      if (isAbortError(err)) return;
       onMessagesChange((current) => [
         ...current,
         {
@@ -2101,6 +2248,9 @@ function DashboardAIAssistantPanel({
         }
       ]);
     } finally {
+      if (activeChatRequestRef.current?.controller === controller) {
+        activeChatRequestRef.current = null;
+      }
       setSending(false);
     }
   }
@@ -2122,9 +2272,11 @@ function DashboardAIAssistantPanel({
     onMessagesChange((current) => replaceEditedChatMessage(current, editingMessage, updatedUserMessage));
     onDraftChange((currentDraft) => (currentDraft.trim() === cleanMessage ? "" : currentDraft));
 
+    const controller = new AbortController();
+    activeChatRequestRef.current = { controller, draftText: cleanMessage };
     setSending(true);
     try {
-      const response = await askChatbot(cleanMessage, selectedAttachment?.file || null, null, history);
+      const response = await askChatbot(cleanMessage, selectedAttachment?.file || null, null, history, { signal: controller.signal });
       const reply = response.response || response || {};
       onMessagesChange((current) => [
         ...current,
@@ -2144,12 +2296,14 @@ function DashboardAIAssistantPanel({
           time: formatAssistantTime(new Date())
         }
       ]);
+      refreshAfterAssistantMutation(reply);
       setEditingMessage(null);
       if (selectedAttachment) {
         onAttachmentChange(null);
         if (fileInputRef.current) fileInputRef.current.value = "";
       }
     } catch (err) {
+      if (isAbortError(err)) return;
       onMessagesChange((current) => [
         ...current,
         {
@@ -2162,6 +2316,9 @@ function DashboardAIAssistantPanel({
         }
       ]);
     } finally {
+      if (activeChatRequestRef.current?.controller === controller) {
+        activeChatRequestRef.current = null;
+      }
       setSending(false);
     }
   }
@@ -2223,11 +2380,34 @@ function DashboardAIAssistantPanel({
     onDraftChange("");
   }
 
+  function stopAssistantResponse() {
+    const activeRequest = activeChatRequestRef.current;
+    if (!activeRequest) return;
+    if (!draftRef.current.trim() && activeRequest.draftText) {
+      onDraftChange(activeRequest.draftText);
+    }
+    activeRequest.controller.abort();
+  }
+
+  function refreshAfterAssistantMutation(reply) {
+    if (!reply?.created_record_id && !reply?.createdRecordId) return;
+    onRefreshContext?.().catch(() => {
+      // Keep chat non-destructive if a background data refresh fails.
+    });
+  }
+
   async function refreshAssistantContext() {
     if (refreshingContext || sending) return;
     setRefreshingContext(true);
+    setRefreshNotice({ status: "loading", text: "Refreshing context..." });
     try {
+      if (!onRefreshContext) {
+        throw new Error("Context refresh is not available.");
+      }
       await onRefreshContext?.();
+      setRefreshNotice({ status: "success", text: "Context refreshed" });
+    } catch (err) {
+      setRefreshNotice({ status: "error", text: `Could not refresh context: ${apiErrorMessage(err)}` });
     } finally {
       setRefreshingContext(false);
     }
@@ -2270,7 +2450,15 @@ function DashboardAIAssistantPanel({
           <h2>Conci AI</h2>
           <p>Your smart concierge</p>
         </div>
-        <button className="dashboard-ai-icon-button" onClick={refreshAssistantContext} type="button" aria-label="Refresh Conci AI context" disabled={sending || refreshingContext}>
+        <button
+          aria-busy={refreshingContext}
+          className={refreshingContext ? "dashboard-ai-icon-button refreshing" : "dashboard-ai-icon-button"}
+          onClick={refreshAssistantContext}
+          type="button"
+          aria-label={refreshingContext ? "Refreshing Conci AI context" : "Refresh Conci AI context"}
+          disabled={sending || refreshingContext}
+          title={refreshingContext ? "Refreshing context..." : "Refresh context"}
+        >
           <RefreshCw size={16} />
         </button>
         <button className="dashboard-ai-icon-button" onClick={onResize} type="button" aria-label={expanded ? "Return Conci AI to normal size" : "Expand Conci AI"}>
@@ -2283,6 +2471,12 @@ function DashboardAIAssistantPanel({
           <X size={17} />
         </button>
       </div>
+
+      {refreshNotice && (
+        <div className={`dashboard-ai-context-notice ${refreshNotice.status}`} role="status" aria-live="polite">
+          {refreshNotice.text}
+        </div>
+      )}
 
       <div className="dashboard-ai-messages" ref={messagesRef}>
         {messages.map((message) => (
@@ -2330,7 +2524,9 @@ function DashboardAIAssistantPanel({
                 <button type="button" onClick={() => cancelAssistantAction(message)} disabled={sending}>Cancel</button>
               </div>
             )}
-            {message.source && <span className="dashboard-ai-source">{message.source}</span>}
+            {formatDashboardAIMessageSource(message.source) && (
+              <span className="dashboard-ai-source">{formatDashboardAIMessageSource(message.source)}</span>
+            )}
             <time>{message.time}</time>
           </article>
         ))}
@@ -2402,6 +2598,7 @@ function DashboardAIAssistantPanel({
           onChange={(event) => onDraftChange(event.target.value)}
           onKeyDown={handleComposerKeyDown}
           placeholder={editingMessage ? "Edit your message..." : "Ask anything..."}
+          ref={textareaRef}
           rows={2}
           value={draft}
         />
@@ -2415,12 +2612,38 @@ function DashboardAIAssistantPanel({
         >
           <X size={15} />
         </button>
-        <button type="submit" aria-label={editingMessage ? "Update message" : "Send message"} disabled={sending || (!draft.trim() && !attachedFile)}>
-          {editingMessage ? <CheckCircle2 size={17} /> : <Send size={17} />}
-        </button>
+        {sending ? (
+          <button
+            className="dashboard-ai-stop-button"
+            type="button"
+            aria-label="Stop Conci AI response"
+            title="Stop response"
+            onClick={stopAssistantResponse}
+          >
+            <Square size={16} fill="currentColor" />
+          </button>
+        ) : (
+          <button type="submit" aria-label={editingMessage ? "Update message" : "Send message"} disabled={!draft.trim() && !attachedFile}>
+            {editingMessage ? <CheckCircle2 size={17} /> : <Send size={17} />}
+          </button>
+        )}
       </form>
     </aside>
   );
+}
+
+function formatDashboardAIMessageSource(source) {
+  const rawSource = String(source || "").trim();
+  if (!rawSource) return "";
+  const providerNames = new Set(["deepinfra", "openai", "grok", "xai"]);
+  const cleanedParts = rawSource
+    .split(/\s*[•·|/]\s*/)
+    .map((part) => part.trim())
+    .filter((part) => {
+      const normalizedPart = part.toLowerCase().replace(/\s+/g, "");
+      return part && !providerNames.has(normalizedPart);
+    });
+  return cleanedParts.join(" • ");
 }
 
 function DashboardAIMessageTable({ table }) {
@@ -3045,12 +3268,12 @@ function DashboardVendorBillingSection({ data }) {
         </div>
       )}
 
-      <VendorBillingChatbot data={data} />
+      <VendorBillingChatbot />
     </section>
   );
 }
 
-function VendorBillingChatbot({ data }) {
+function VendorBillingChatbot() {
   const examples = [
     "Which vendors are active?",
     "Show food vendors.",
@@ -3060,23 +3283,55 @@ function VendorBillingChatbot({ data }) {
     "Which vendors are closing soon?"
   ];
   const [question, setQuestion] = useState("");
+  const [loading, setLoading] = useState(false);
   const [messages, setMessages] = useState([
     {
+      id: "vendor-chat-seed",
       role: "assistant",
-      text: "Ask about active vendors, services, monthly billing, expected billing, or vendors closing soon."
+      text: "Ask about active vendors, services, monthly billing, expected billing, or vendors closing soon.",
+      source: "Vendors"
     }
   ]);
 
-  function askVendorBot(nextQuestion) {
+  async function askVendorBot(nextQuestion) {
     const cleanQuestion = nextQuestion.trim();
-    if (!cleanQuestion) return;
-    const answer = answerVendorBillingQuestion(cleanQuestion, data);
+    if (!cleanQuestion || loading) return;
+    const requestId = `vendor-chat-${Date.now()}`;
     setMessages((current) => [
       ...current,
-      { role: "user", text: cleanQuestion },
-      { role: "assistant", text: answer }
+      { id: `${requestId}-user`, requestId, role: "user", text: cleanQuestion }
     ]);
     setQuestion("");
+    setLoading(true);
+    try {
+      const response = await askChatbot(cleanQuestion);
+      const reply = response.response || response || {};
+      setMessages((current) => [
+        ...current,
+        {
+          id: `${requestId}-assistant`,
+          requestId,
+          role: "assistant",
+          text: reply.answer || reply.message || "I couldn’t find matching data for your access level.",
+          bullets: reply.bullets || response.bullets || [],
+          table: reply.table || response.table || null,
+          source: reply.source || response.source
+        }
+      ]);
+    } catch (err) {
+      setMessages((current) => [
+        ...current,
+        {
+          id: `${requestId}-error`,
+          requestId,
+          role: "assistant",
+          text: `I could not answer that request: ${apiErrorMessage(err)}`,
+          source: "Conci AI"
+        }
+      ]);
+    } finally {
+      setLoading(false);
+    }
   }
 
   function submitQuestion(event) {
@@ -3090,89 +3345,47 @@ function VendorBillingChatbot({ data }) {
         <Bot size={18} />
         <div>
           <h3>Conci AI</h3>
-          <p>Local demo answers from the vendor data already loaded in Agent Concierge.</p>
+          <p>Answers use the latest role-filtered Agent Concierge data.</p>
         </div>
       </div>
       <div className="vendor-chatbot-examples">
         {examples.map((example) => (
-          <button key={example} onClick={() => askVendorBot(example)} type="button">
+          <button disabled={loading} key={example} onClick={() => askVendorBot(example)} type="button">
             {example}
           </button>
         ))}
       </div>
       <div className="vendor-chatbot-messages">
         {messages.slice(-6).map((message, index) => (
-          <article className={`vendor-chat-message ${message.role}`} key={`${message.role}-${index}-${message.text}`}>
-            {message.text}
+          <article className={`vendor-chat-message ${message.role}`} key={message.id || `${message.role}-${index}-${message.text}`}>
+            {String(message.text || "").split("\n").map((line, lineIndex) => <p key={`${line}-${lineIndex}`}>{line}</p>)}
+            {message.bullets?.length > 0 && (
+              <ul>
+                {message.bullets.map((bullet) => <li key={bullet}>{bullet}</li>)}
+              </ul>
+            )}
+            <DashboardAIMessageTable table={message.table} />
+            {formatDashboardAIMessageSource(message.source) && (
+              <span className="dashboard-ai-source">{formatDashboardAIMessageSource(message.source)}</span>
+            )}
           </article>
         ))}
+        {loading && <article className="vendor-chat-message assistant">Checking latest vendor data...</article>}
       </div>
       <form className="vendor-chatbot-input" onSubmit={submitQuestion}>
         <input
+          disabled={loading}
           onChange={(event) => setQuestion(event.target.value)}
           placeholder="Ask about vendors..."
           value={question}
         />
-        <button className="primary-button" type="submit">
+        <button className="primary-button" disabled={loading || !question.trim()} type="submit">
           <Send size={15} />
-          Ask
+          {loading ? "Asking" : "Ask"}
         </button>
       </form>
     </section>
   );
-}
-
-function answerVendorBillingQuestion(question, data) {
-  const normalized = question.toLowerCase();
-  const vendors = data?.current_vendors || [];
-  const billingRows = data?.current_billing?.rows || [];
-  const expectedBilling = data?.expected_billing || [];
-  const closingSoon = data?.closing_soon || [];
-  const canViewBilling = Boolean(data?.can_view_billing);
-  const listNames = (items) => items.map((item) => item.vendor_name).filter(Boolean).join(", ");
-
-  if (normalized.includes("active")) {
-    return vendors.length
-      ? `${vendors.length} active vendors: ${vendors.map((vendor) => `${vendor.vendor_name} (${vendor.service_provided || "Other"})`).join(", ")}.`
-      : "There are no active vendors in the current dashboard data.";
-  }
-
-  if (normalized.includes("food")) {
-    const foodVendors = vendors.filter((vendor) => String(vendor.service_provided || "").toLowerCase() === "food");
-    return foodVendors.length ? `Food vendors: ${listNames(foodVendors)}.` : "No active food vendors are visible in the current dashboard data.";
-  }
-
-  if (normalized.includes("monthly") || normalized.includes("total billing")) {
-    if (!canViewBilling) return "Billing amounts are restricted for your role. You can view vendor service summary only.";
-    return `Total current monthly equivalent vendor billing is ${formatMoney(data?.current_billing?.total_monthly_equivalent || 0)}.`;
-  }
-
-  if (normalized.includes("highest")) {
-    if (!canViewBilling) return "Billing amounts are restricted for your role.";
-    const highest = [...billingRows].sort((a, b) => Number(b.monthly_equivalent || 0) - Number(a.monthly_equivalent || 0))[0];
-    return highest
-      ? `${highest.vendor_name} has the highest monthly equivalent billing at ${formatMoney(highest.monthly_equivalent)}.`
-      : "No vendor billing rows are available yet.";
-  }
-
-  if (normalized.includes("expected") || normalized.includes("this month")) {
-    if (!canViewBilling) return "Expected billing amounts are restricted for your role.";
-    const thisMonth = expectedBilling.find((item) => item.label === "This month");
-    return `Expected vendor billing this month is ${formatMoney(thisMonth?.value || 0)}.`;
-  }
-
-  if (normalized.includes("closing") || normalized.includes("close soon")) {
-    return closingSoon.length
-      ? `Vendors closing soon: ${closingSoon.map((vendor) => `${vendor.vendor_name} on ${formatDateOnly(vendor.end_date)}`).join(", ")}.`
-      : "No visible active vendors are closing in the next 60 days.";
-  }
-
-  if (normalized.includes("service")) {
-    const summary = (data?.service_summary || []).map((item) => `${item.service}: ${item.count}`).join(", ");
-    return summary ? `Vendor services summary: ${summary}.` : "No service summary is available yet.";
-  }
-
-  return "I can answer vendor questions about active vendors, service types, current monthly billing, highest billing, expected billing, and closing-soon vendors.";
 }
 
 function DashboardTicketList({ tickets }) {
@@ -3225,15 +3438,33 @@ function DashboardCharts({ charts = [] }) {
 }
 
 function DashboardChartCard({ chart }) {
-  const data = Array.isArray(chart.data) ? chart.data.filter((item) => Number(item.value || 0) >= 0) : [];
+  const isTasksByStatus = dashboardIsTasksByStatusChart(chart);
+  const isInventoryByStatus = dashboardIsInventoryByStatusChart(chart);
+  const data = isTasksByStatus
+    ? dashboardTaskStatusChartData(chart.data)
+    : isInventoryByStatus
+      ? dashboardInventoryStatusChartData(chart.data)
+      : Array.isArray(chart.data) ? chart.data.filter((item) => Number(item.value || 0) >= 0) : [];
   const hasData = data.some((item) => Number(item.value || 0) > 0);
   const valueKind = chart.value_kind || "count";
+  const inventoryAnimationKey = isInventoryByStatus
+    ? data.map((item) => `${item.name}:${Number(item.value || 0)}`).join("|")
+    : "";
   return (
     <section className="dashboard-card dashboard-chart-card">
       <div className="section-heading">
         <h2>{chart.title}</h2>
       </div>
-      {hasData ? (
+      {isTasksByStatus ? (
+        <DashboardTaskStatusDonut data={data} hasData={hasData} valueKind={valueKind} />
+      ) : isInventoryByStatus ? (
+        <DashboardInventoryStatusStackedBar
+          data={data}
+          hasData={hasData}
+          key={inventoryAnimationKey}
+          valueKind={valueKind}
+        />
+      ) : hasData ? (
         <div className="dashboard-chart-wrap">
           <ResponsiveContainer width="100%" height="100%">
             {chart.chart_type === "pie"
@@ -3250,6 +3481,161 @@ function DashboardChartCard({ chart }) {
         </div>
       )}
     </section>
+  );
+}
+
+function dashboardIsInventoryByStatusChart(chart) {
+  const id = String(chart?.id || "").toLowerCase();
+  const title = String(chart?.title || "").toLowerCase();
+  return id === "inventory_by_status" || title === "inventory by status";
+}
+
+function dashboardIsTasksByStatusChart(chart) {
+  const id = String(chart?.id || "").toLowerCase();
+  const title = String(chart?.title || "").toLowerCase();
+  return id === "tasks_by_status" || title === "tasks by status";
+}
+
+function dashboardInventoryStatusChartData(rawData) {
+  const statusOrder = ["In Use", "Extra", "Submitted to Vendor", "Available / Other"];
+  const aliases = {
+    "in use": "In Use",
+    extra: "Extra",
+    "submitted to vendor": "Submitted to Vendor",
+    available: "Available / Other",
+    other: "Available / Other"
+  };
+  const counts = Object.fromEntries(statusOrder.map((status) => [status, 0]));
+  (Array.isArray(rawData) ? rawData : []).forEach((item) => {
+    const rawName = String(item?.name || item?.label || "Other").trim() || "Other";
+    const name = aliases[rawName.toLowerCase()] || rawName;
+    const value = Number(item?.value || 0);
+    if (counts[name] !== undefined) {
+      counts[name] += value;
+    } else if (value > 0) {
+      counts["Available / Other"] += value;
+    }
+  });
+  return statusOrder.map((status, index) => ({
+    name: status,
+    value: counts[status],
+    color: DASHBOARD_CHART_COLORS[index % DASHBOARD_CHART_COLORS.length]
+  }));
+}
+
+function dashboardTaskStatusChartData(rawData) {
+  const wantedStatuses = ["Open", "In Progress", "Completed", "Overdue", "Waiting Approval"];
+  const aliases = {
+    open: "Open",
+    "in progress": "In Progress",
+    completed: "Completed",
+    complete: "Completed",
+    "waiting approval": "Waiting Approval",
+    pending: "Waiting Approval",
+    "pending approval": "Waiting Approval",
+    overdue: "Overdue"
+  };
+  const counts = Object.fromEntries(wantedStatuses.map((status) => [status, 0]));
+  (Array.isArray(rawData) ? rawData : []).forEach((item) => {
+    const rawName = String(item?.name || item?.label || "").trim();
+    const normalizedName = rawName.toLowerCase();
+    const status = aliases[normalizedName] || wantedStatuses.find((wanted) => wanted.toLowerCase() === normalizedName);
+    if (status) counts[status] += Number(item?.value || 0);
+  });
+  return wantedStatuses.map((status, index) => ({
+    name: status,
+    value: counts[status],
+    color: DASHBOARD_CHART_COLORS[index % DASHBOARD_CHART_COLORS.length]
+  }));
+}
+
+function DashboardTaskStatusDonut({ data, hasData, valueKind }) {
+  return (
+    <div className="dashboard-chart-wrap dashboard-task-status-chart">
+      <div className="dashboard-task-status-donut">
+        {hasData ? (
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
+              <Tooltip content={(props) => <DashboardTooltip {...props} valueKind={valueKind} />} />
+              <Pie data={data.filter((item) => Number(item.value || 0) > 0)} dataKey="value" nameKey="name" innerRadius="56%" outerRadius="80%" paddingAngle={3}>
+                {data.filter((item) => Number(item.value || 0) > 0).map((entry) => (
+                  <Cell key={entry.name} fill={entry.color} />
+                ))}
+              </Pie>
+            </PieChart>
+          </ResponsiveContainer>
+        ) : (
+          <div className="dashboard-task-status-empty">0</div>
+        )}
+      </div>
+      <div className="dashboard-task-status-legend">
+        {data.map((item) => (
+          <div className="dashboard-task-status-row" key={item.name}>
+            <span style={{ "--task-status-color": item.color }} />
+            <small>{item.name}</small>
+            <strong>{formatChartValue(item.value, valueKind)}</strong>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DashboardInventoryStatusStackedBar({ data, hasData, valueKind }) {
+  const total = data.reduce((sum, item) => sum + Number(item.value || 0), 0);
+  return (
+    <div className="dashboard-chart-wrap dashboard-inventory-stack-chart">
+      {hasData ? (
+        <>
+          <div className="dashboard-inventory-stack-total">
+            <span>Total inventory</span>
+            <strong>{formatChartValue(total, valueKind)}</strong>
+          </div>
+          <div className="dashboard-inventory-stacked-bar" aria-label={`Inventory total: ${total}`}>
+            {data.map((item, index) => {
+              const value = Number(item.value || 0);
+              const percentage = total > 0 ? (value / total) * 100 : 0;
+              if (value <= 0) return null;
+              return (
+                <span
+                  key={item.name}
+                  style={{
+                    "--inventory-stack-color": item.color || DASHBOARD_CHART_COLORS[index % DASHBOARD_CHART_COLORS.length],
+                    "--inventory-stack-width": `${percentage}%`
+                  }}
+                  title={`${item.name}: ${value} (${Math.round(percentage)}%)`}
+                />
+              );
+            })}
+          </div>
+          <div className="dashboard-inventory-stack-legend">
+            {data.map((item, index) => {
+              const value = Number(item.value || 0);
+              const percentage = total > 0 ? Math.round((value / total) * 100) : 0;
+              return (
+              <div
+                className="dashboard-inventory-stack-row"
+                key={item.name}
+                style={{
+                  "--inventory-stack-color": item.color || DASHBOARD_CHART_COLORS[index % DASHBOARD_CHART_COLORS.length]
+                }}
+              >
+                <span />
+                <small>{item.name}</small>
+                <strong>{formatChartValue(value, valueKind)}</strong>
+                <em>{percentage}%</em>
+              </div>
+              );
+            })}
+          </div>
+        </>
+      ) : (
+        <div className="dashboard-chart-empty">
+          <Package size={22} />
+          <span>No inventory status data yet.</span>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -8918,6 +9304,10 @@ function ReportsView({ currentUser, onChanged, onReportDeleted, onReportSaved, r
   const [reportPage, setReportPage] = useState(1);
   const [importOpen, setImportOpen] = useState(false);
   const [viewingReport, setViewingReport] = useState(null);
+  const [reportPreview, setReportPreview] = useState(null);
+  const [reportPreviewFileUrl, setReportPreviewFileUrl] = useState("");
+  const [reportPreviewLoading, setReportPreviewLoading] = useState(false);
+  const [reportPreviewError, setReportPreviewError] = useState("");
   const [reportMessage, setReportMessage] = useState(null);
   const [form, setForm] = useState(() => ({
     ...emptyReportForm,
@@ -8963,6 +9353,11 @@ function ReportsView({ currentUser, onChanged, onReportDeleted, onReportSaved, r
     const timer = window.setTimeout(() => setToastMessage(""), 3000);
     return () => window.clearTimeout(timer);
   }, [toastMessage]);
+
+  useEffect(() => {
+    if (!reportPreviewFileUrl) return undefined;
+    return () => window.URL.revokeObjectURL(reportPreviewFileUrl);
+  }, [reportPreviewFileUrl]);
 
   function updateFilter(field, value) {
     setFilters((current) => ({ ...current, [field]: value }));
@@ -9014,8 +9409,8 @@ function ReportsView({ currentUser, onChanged, onReportDeleted, onReportSaved, r
     setSelectedFileName("");
     if (!file) return;
     const fileName = file.name.toLowerCase();
-    if (!fileName.endsWith(".csv") && !fileName.endsWith(".xlsx") && !fileName.endsWith(".pdf")) {
-      setFileError("Unsupported file type. Please upload CSV, XLSX, or PDF.");
+    if (!/\.(csv|xlsx|pdf|txt|md|docx|doc)$/i.test(file.name)) {
+      setFileError("Unsupported file type. Please upload CSV, XLSX, PDF, TXT, MD, DOCX, or DOC.");
       return;
     }
     if (file.size === 0) {
@@ -9083,6 +9478,47 @@ function ReportsView({ currentUser, onChanged, onReportDeleted, onReportSaved, r
       setToastType("error");
       setToastMessage(`Could not export report: ${apiErrorMessage(err)}`);
     }
+  }
+
+  async function openReportPreview(report) {
+    setViewingReport(report);
+    setReportPreview(null);
+    setReportPreviewFileUrl("");
+    setReportPreviewError("");
+    setReportPreviewLoading(true);
+    try {
+      const response = await getReportPreview(report.id);
+      const preview = response.preview || null;
+      setViewingReport(response.report || report);
+      setReportPreview(preview);
+      if (String(preview?.preview_type || "").toLowerCase() === "pdf") {
+        try {
+          const file = await getReportPreviewFile(report.id);
+          setReportPreviewFileUrl(window.URL.createObjectURL(file.blob));
+        } catch (fileErr) {
+          setReportPreview({
+            ...reportPreviewUnavailable(),
+            message: apiErrorMessage(fileErr) || "Preview is not available. Please download the report."
+          });
+        }
+      }
+    } catch (err) {
+      if (isReportPreviewFallbackError(err)) {
+        setReportPreview(reportPreviewUnavailable());
+      } else {
+        setReportPreviewError(apiErrorMessage(err));
+      }
+    } finally {
+      setReportPreviewLoading(false);
+    }
+  }
+
+  function closeReportPreview() {
+    setViewingReport(null);
+    setReportPreview(null);
+    setReportPreviewFileUrl("");
+    setReportPreviewError("");
+    setReportPreviewLoading(false);
   }
 
   async function handleExportFiltered() {
@@ -9234,7 +9670,7 @@ function ReportsView({ currentUser, onChanged, onReportDeleted, onReportSaved, r
           onDelete={handleDelete}
           onDownload={handleDownload}
           onPageChange={setReportPage}
-          onView={setViewingReport}
+          onView={openReportPreview}
           page={currentReportPage}
           pageCount={reportPageCount}
           reports={pagedReports}
@@ -9255,12 +9691,12 @@ function ReportsView({ currentUser, onChanged, onReportDeleted, onReportSaved, r
             <div className="inventory-upload-area report-upload-area">
               <div>
                 <strong>{selectedFileName || "No file selected"}</strong>
-                <span>Supported formats: CSV, XLSX, and PDF.</span>
+                <span>Supported formats: CSV, XLSX, PDF, TXT, MD, DOCX, and DOC.</span>
                 <p>Select a file, add report metadata, then import it into local report storage.</p>
               </div>
               <div className="inventory-upload-actions">
                 <input
-                  accept=".csv,.xlsx,.pdf,text/csv,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                  accept=".csv,.xlsx,.pdf,.txt,.md,.docx,.doc,text/csv,application/pdf,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword"
                   className="visually-hidden"
                   onChange={handleReportFile}
                   ref={reportFileInputRef}
@@ -9302,28 +9738,20 @@ function ReportsView({ currentUser, onChanged, onReportDeleted, onReportSaved, r
       )}
 
       {viewingReport && (
-        <div className="modal-backdrop" role="presentation">
-          <section className="vendor-modal report-modal" role="dialog" aria-modal="true" aria-label="Report details">
+        <div className="modal-backdrop report-preview-backdrop" role="presentation">
+          <section className="vendor-modal report-modal report-preview-modal" role="dialog" aria-modal="true" aria-label="Report preview">
             <div className="section-heading">
-              <h2>Report Details</h2>
-              <button className="icon-only" onClick={() => setViewingReport(null)} type="button" aria-label="Close report details">
+              <div>
+                <h2>{viewingReport.report_name}</h2>
+                <p>{viewingReport.report_id} · {viewingReport.file_type} · Uploaded {formatDate(viewingReport.uploaded_at)}</p>
+              </div>
+              <button className="icon-only" onClick={closeReportPreview} type="button" aria-label="Close report preview">
                 <X size={16} />
               </button>
             </div>
-            <div className="report-detail-grid">
-              <span>Report ID<strong>{viewingReport.report_id}</strong></span>
-              <span>Name<strong>{viewingReport.report_name}</strong></span>
-              <span>Type<strong>{viewingReport.report_type}</strong></span>
-              <span>Department<strong>{viewingReport.department}</strong></span>
-              <span>Uploaded By<strong>{viewingReport.uploaded_by_name}</strong></span>
-              <span>Uploaded Date<strong>{formatDate(viewingReport.uploaded_at)}</strong></span>
-              <span>File<strong>{viewingReport.file_name}</strong></span>
-              <span>Size<strong>{formatFileSize(viewingReport.file_size)}</strong></span>
-              <span>Status<strong>{viewingReport.status}</strong></span>
-              <span className="wide">Notes<strong>{viewingReport.notes || "—"}</strong></span>
-            </div>
+            <ReportPreviewContent error={reportPreviewError} fileUrl={reportPreviewFileUrl} loading={reportPreviewLoading} preview={reportPreview} />
             <div className="modal-actions">
-              <button className="icon-button secondary" onClick={() => setViewingReport(null)} type="button">Close</button>
+              <button className="icon-button secondary" onClick={closeReportPreview} type="button">Close</button>
               {canImportExport && (
                 <button className="icon-button secondary" onClick={() => openReportMessage(viewingReport)} type="button">
                   <Send size={16} />
@@ -9350,6 +9778,143 @@ function ReportsView({ currentUser, onChanged, onReportDeleted, onReportSaved, r
         />
       )}
     </section>
+  );
+}
+
+function reportPreviewUnavailable() {
+  return {
+    preview_type: "unavailable",
+    columns: [],
+    rows: [],
+    row_count: 0,
+    truncated: false,
+    message: "Preview is not available. Please download the report."
+  };
+}
+
+function isReportPreviewFallbackError(err) {
+  if (!err || err.status === 403 || err.status === 401) return false;
+  if (!err.status || err.status >= 400) return true;
+  const detail = err.payload?.detail;
+  const message = String(err.message || "");
+  return (
+    err.status === 404 ||
+    detail === "Not Found" ||
+    /endpoint was not found/i.test(message) ||
+    /report file not found/i.test(message) ||
+    /preview is not available/i.test(message)
+  );
+}
+
+function ReportPreviewContent({ error, fileUrl, loading, preview }) {
+  if (loading) {
+    return (
+      <div className="report-preview-state">
+        <RefreshCw size={18} className="spin-icon" />
+        <span>Loading report preview...</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="report-preview-state error" role="alert">
+        <AlertCircle size={18} />
+        <span>{error}</span>
+      </div>
+    );
+  }
+
+  if (!preview) {
+    return (
+      <div className="report-preview-state">
+        <FileText size={18} />
+        <span>No preview loaded yet.</span>
+      </div>
+    );
+  }
+
+  const columns = Array.isArray(preview.columns) ? preview.columns : [];
+  const rows = Array.isArray(preview.rows) ? preview.rows : [];
+  const previewType = String(preview.preview_type || "").toLowerCase();
+
+  if (previewType === "pdf" && (fileUrl || preview.content_base64)) {
+    const pdfSource = fileUrl || `data:${preview.mime_type || "application/pdf"};base64,${preview.content_base64}`;
+    return (
+      <div className="report-preview-content report-preview-file-content">
+        <object
+          className="report-preview-pdf"
+          data={pdfSource}
+          type="application/pdf"
+          title="Report PDF preview"
+        >
+          <iframe
+            className="report-preview-pdf"
+            src={pdfSource}
+            title="Report PDF preview"
+          />
+          <div className="report-preview-state">
+            <FileText size={20} />
+            <strong>Preview is not available. Please download the report.</strong>
+          </div>
+        </object>
+      </div>
+    );
+  }
+
+  if (["txt", "md", "docx"].includes(previewType) && (preview.text || preview.message)) {
+    return (
+      <div className="report-preview-content report-preview-file-content">
+        {preview.text ? (
+          <>
+            <div className="report-preview-summary">
+              <span>{preview.row_count} {previewType === "docx" ? "paragraphs" : "lines"}</span>
+              {preview.truncated && <span>Showing preview excerpt</span>}
+            </div>
+            <pre className="report-preview-text">{preview.text}</pre>
+          </>
+        ) : (
+          <div className="report-preview-state">
+            <FileText size={20} />
+            <strong>{preview.message || "Preview is not available for this file. Please download the report."}</strong>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (!columns.length || !rows.length) {
+    return (
+      <div className="report-preview-state">
+        <FileText size={20} />
+        <strong>{preview.message || "Preview is not available for this file. Please download the report."}</strong>
+      </div>
+    );
+  }
+
+  return (
+    <div className="report-preview-content">
+      <div className="report-preview-summary">
+        <span>{preview.row_count} rows</span>
+        {preview.truncated && <span>Showing first {rows.length} rows</span>}
+      </div>
+      <div className="report-preview-table-wrap">
+        <table className="report-preview-table">
+          <thead>
+            <tr>
+              {columns.map((column) => <th key={column}>{column}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, rowIndex) => (
+              <tr key={`report-preview-row-${rowIndex}`}>
+                {columns.map((column) => <td key={`${rowIndex}-${column}`}>{row[column] || "—"}</td>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 

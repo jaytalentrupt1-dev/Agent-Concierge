@@ -1,6 +1,6 @@
 import { readSessionToken, writeSessionToken } from "./authStorage";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8001";
 
 let authToken = readSessionToken();
 
@@ -72,6 +72,23 @@ async function downloadRequest(path, fallbackFilename) {
   };
 }
 
+async function blobRequest(path, fallbackFilename) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    headers: {
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {})
+    }
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new ApiError(formatApiError(payload, response.status), response.status, payload);
+  }
+  return {
+    blob: await response.blob(),
+    contentType: response.headers.get("Content-Type") || "application/octet-stream",
+    filename: filenameFromDisposition(response.headers.get("Content-Disposition"), fallbackFilename)
+  };
+}
+
 export function login(email, password) {
   return request("/api/auth/login", {
     method: "POST",
@@ -109,13 +126,14 @@ export function getDashboard() {
   return request("/api/dashboard");
 }
 
-async function chatRequest(path, body) {
+async function chatRequest(path, body, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: {
       ...(authToken ? { Authorization: `Bearer ${authToken}` } : {})
     },
-    body
+    body,
+    signal: options.signal
   });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
@@ -124,7 +142,7 @@ async function chatRequest(path, body) {
   return response.json();
 }
 
-export function askChatbot(message, file = null, action = null, history = []) {
+export function askChatbot(message, file = null, action = null, history = [], options = {}) {
   if (file) {
     const formData = new FormData();
     formData.append("message", message || "");
@@ -135,11 +153,12 @@ export function askChatbot(message, file = null, action = null, history = []) {
       formData.append("history", JSON.stringify(history));
     }
     formData.append("file", file, file.name || "attached-file");
-    return chatRequest("/api/chat/assistant", formData);
+    return chatRequest("/api/chat/assistant", formData, { signal: options.signal });
   }
   return request("/api/chat/assistant", {
     method: "POST",
-    body: JSON.stringify({ message, ...(action ? { action } : {}), ...(history?.length ? { history } : {}) })
+    body: JSON.stringify({ message, ...(action ? { action } : {}), ...(history?.length ? { history } : {}) }),
+    signal: options.signal
   });
 }
 
@@ -305,6 +324,14 @@ export function importReport(payload) {
     method: "POST",
     body: JSON.stringify(payload)
   });
+}
+
+export function getReportPreview(id) {
+  return request(`/api/reports/${id}/preview`);
+}
+
+export function getReportPreviewFile(id) {
+  return blobRequest(`/api/reports/${id}/preview-file`, "report");
 }
 
 export function downloadReport(id) {

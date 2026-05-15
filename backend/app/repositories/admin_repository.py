@@ -3017,6 +3017,14 @@ class AdminRepository:
             return "XLSX"
         if extension == ".pdf":
             return "PDF"
+        if extension == ".txt":
+            return "TXT"
+        if extension == ".md":
+            return "MD"
+        if extension == ".docx":
+            return "DOCX"
+        if extension == ".doc":
+            return "DOC"
         return ""
 
     def _next_report_id(self) -> str:

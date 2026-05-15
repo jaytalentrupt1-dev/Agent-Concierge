@@ -55,7 +55,12 @@ class DeepInfraChatClient:
     def classify_intent(self, message: str, allowed_intents: list[str]) -> dict[str, Any]:
         system = (
             "You classify Conci AI user messages. Return strict JSON only. "
-            "Do not answer the user. Use only one of the allowed intent ids."
+            "Do not answer the user. Use only one of the allowed intent ids. "
+            "Choose intent from the full sentence meaning and previous-topic hints, not isolated words. "
+            "Important distinctions: calendar events means calendar_events, today's date means utility_date, "
+            "ticket history means recent_tickets, a specific ticket status question means ticket_status, "
+            "food vendor details means vendor_details, vendor billing means vendor_billing, "
+            "and clarifications like show more, give all, only food, or earlier history should continue the previous topic."
         )
         user = {
             "allowed_intents": allowed_intents,

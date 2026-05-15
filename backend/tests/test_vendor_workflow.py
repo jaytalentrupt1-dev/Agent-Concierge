@@ -572,6 +572,72 @@ class VendorWorkflowTest(unittest.TestCase):
         self.assertEqual(employee_response.status_code, 200)
         self.assertEqual(employee_response.json()["charts"], [])
 
+    def test_dashboard_and_chatbot_use_same_overdue_task_count(self):
+        with (
+            patch.object(settings, "ai_provider", "mock"),
+            patch.object(settings, "deepinfra_api_key", ""),
+        ):
+            client, _ = self.api_client()
+        admin_headers = self.auth_headers(client)
+        overdue_response = client.post(
+            "/api/tasks",
+            json=self.task_payload(
+                title="Backend shared overdue task",
+                status="Open",
+                due_date="2026-05-01",
+            ),
+            headers=admin_headers,
+        )
+        completed_response = client.post(
+            "/api/tasks",
+            json=self.task_payload(
+                title="Completed old task should not be overdue",
+                status="Completed",
+                due_date="2026-05-01",
+            ),
+            headers=admin_headers,
+        )
+        cancelled_response = client.post(
+            "/api/tasks",
+            json=self.task_payload(
+                title="Cancelled task should count in chart",
+                status="Cancelled",
+                due_date="2026-05-01",
+            ),
+            headers=admin_headers,
+        )
+        self.assertEqual(overdue_response.status_code, 200)
+        self.assertEqual(completed_response.status_code, 200)
+        self.assertEqual(cancelled_response.status_code, 200)
+        self.assertTrue(overdue_response.json()["task"]["overdue"])
+        self.assertFalse(completed_response.json()["task"]["overdue"])
+        self.assertFalse(cancelled_response.json()["task"]["overdue"])
+
+        dashboard = client.get("/api/dashboard", headers=admin_headers)
+        self.assertEqual(dashboard.status_code, 200)
+        task_chart = next(chart for chart in dashboard.json()["charts"] if chart["id"] == "tasks_by_status")
+        chart_counts = {item["name"]: item["value"] for item in task_chart["data"]}
+        dashboard_overdue = next(item["value"] for item in task_chart["data"] if item["name"] == "Overdue")
+        dashboard_open = next(item["value"] for item in task_chart["data"] if item["name"] == "Open")
+        tasks_response = client.get("/api/tasks", headers=admin_headers)
+        self.assertEqual(tasks_response.status_code, 200)
+        tasks_page_counts = {}
+        for task in tasks_response.json()["tasks"]:
+            tasks_page_counts[task["status"]] = tasks_page_counts.get(task["status"], 0) + 1
+
+        chatbot = client.post("/api/chat/assistant", json={"message": "show overdue tasks"}, headers=admin_headers)
+        self.assertEqual(chatbot.status_code, 200)
+        payload = chatbot.json()["response"]
+        chatbot_overdue = int(payload["answer"].split(" overdue tasks", 1)[0])
+
+        self.assertEqual(set(chart_counts), {"Open", "In Progress", "Completed", "Overdue", "Waiting Approval"})
+        for status in ["Open", "In Progress", "Completed", "Waiting Approval"]:
+            self.assertEqual(chart_counts[status], tasks_page_counts.get(status, 0))
+        self.assertEqual(dashboard_open, tasks_page_counts.get("Open", 0))
+        self.assertEqual(dashboard_overdue, chatbot_overdue)
+        self.assertTrue(any(row["Task"].startswith("Backend shared overdue task") for row in payload["table"]["rows"]))
+        self.assertFalse(any(row["Task"].startswith("Completed old task") for row in payload["table"]["rows"]))
+
     def test_dashboard_vendor_billing_is_role_scoped(self):
         client, _ = self.api_client()
         admin_headers = self.auth_headers(client)
@@ -706,6 +772,78 @@ class VendorWorkflowTest(unittest.TestCase):
         self.assertEqual(rohit_row["Billing"], "₹4,322 / Q")
         self.assertEqual(rohit_row["End Date"], "31/12/2026")
         self.assertEqual(rohit_row["Status"], "Active")
+
+    def test_chatbot_reads_latest_ticket_and_vendor_changes_at_ask_time(self):
+        with (
+            patch.object(settings, "ai_provider", "mock"),
+            patch.object(settings, "deepinfra_api_key", ""),
+        ):
+            client, _ = self.api_client()
+        admin_headers = self.auth_headers(client)
+
+        created_ticket = client.post(
+            "/api/tickets",
+            json=self.ticket_payload(title="Fresh Sync Ticket", status="Open", due_date="2026-05-20"),
+            headers=admin_headers,
+        )
+        self.assertEqual(created_ticket.status_code, 200)
+        ticket = created_ticket.json()["ticket"]
+        updated_ticket = client.patch(
+            f"/api/tickets/{ticket['id']}/status",
+            json={"status": "Resolved"},
+            headers=admin_headers,
+        )
+        self.assertEqual(updated_ticket.status_code, 200)
+
+        ticket_chat = client.post(
+            "/api/chat/assistant",
+            json={"message": f"what is the status of ticket {ticket['ticket_id']}?"},
+            headers=admin_headers,
+        )
+        self.assertEqual(ticket_chat.status_code, 200)
+        ticket_row = ticket_chat.json()["response"]["table"]["rows"][0]
+        self.assertEqual(ticket_row["Ticket ID"], ticket["ticket_id"])
+        self.assertEqual(ticket_row["Status"], "Resolved")
+
+        created_vendor = client.post(
+            "/api/vendors",
+            json=self.vendor_payload(
+                vendor_name="Fresh Real Time Food",
+                contact_person="Old Contact",
+                contact_details="111111",
+                service_provided="Food",
+                billing_amount=1000,
+                billing_cycle="Monthly",
+            ),
+            headers=admin_headers,
+        )
+        self.assertEqual(created_vendor.status_code, 200)
+        vendor = created_vendor.json()["vendor"]
+        updated_vendor = client.put(
+            f"/api/vendors/{vendor['id']}",
+            json=self.vendor_payload(
+                vendor_name="Fresh Real Time Food",
+                contact_person="New Contact",
+                contact_details="222222",
+                service_provided="Food",
+                billing_amount=2500,
+                billing_cycle="Quarterly",
+            ),
+            headers=admin_headers,
+        )
+        self.assertEqual(updated_vendor.status_code, 200)
+
+        vendor_chat = client.post(
+            "/api/chat/assistant",
+            json={"message": "give me details of Fresh Real Time Food vendor"},
+            headers=admin_headers,
+        )
+        self.assertEqual(vendor_chat.status_code, 200)
+        vendor_rows = vendor_chat.json()["response"]["table"]["rows"]
+        fresh_row = next(row for row in vendor_rows if row["Vendor Name"] == "Fresh Real Time Food")
+        self.assertEqual(fresh_row["Contact"], "New Contact")
+        self.assertEqual(fresh_row["Phone"], "222222")
+        self.assertEqual(fresh_row["Billing"], "₹2,500 / Q")
 
     def test_chatbot_vendor_details_honors_requested_count(self):
         client, _ = self.api_client()
@@ -848,6 +986,37 @@ class VendorWorkflowTest(unittest.TestCase):
         self.assertIn("active vendors", payload["answer"])
         self.assertRegex(payload["answer"], r"You have \d+ active vendors visible for your access level\.")
 
+    def test_chatbot_show_food_vendors_routes_to_vendor_details(self):
+        client, _ = self.api_client()
+        headers = self.auth_headers(client)
+        created = client.post(
+            "/api/vendors",
+            json=self.vendor_payload(
+                vendor_name="Food Intent Vendor",
+                contact_person="Fiona",
+                email="food.intent@example.com",
+                contact_details="9000012345",
+                service_provided="Food",
+            ),
+            headers=headers,
+        )
+        self.assertEqual(created.status_code, 200)
+
+        response = client.post(
+            "/api/chat/assistant",
+            json={"message": "show food vendors"},
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()["response"]
+        self.assertEqual(payload["source"], "Vendors")
+        self.assertEqual(payload["bullets"], [])
+        self.assertIn("food vendors", payload["answer"])
+        self.assertIn("table", payload)
+        self.assertIn("Vendor Name", payload["table"]["columns"])
+        self.assertTrue(all(row["Service"] == "Food" for row in payload["table"]["rows"]))
+
     def test_chatbot_understands_misspelled_vendor_details(self):
         client, _ = self.api_client()
         admin_headers = self.auth_headers(client)
@@ -897,6 +1066,35 @@ class VendorWorkflowTest(unittest.TestCase):
         self.assertEqual(payload["answer"], "Here are recent tickets:")
         self.assertTrue(payload["bullets"])
 
+    def test_chatbot_uses_deepinfra_first_for_ticket_history_intent(self):
+        calls = []
+
+        def fake_classify(_client, message, allowed):
+            calls.append({"message": message, "allowed": allowed})
+            return {"intent": "recent_tickets", "confidence": 0.94, "entities": {}}
+
+        with (
+            patch.object(settings, "ai_provider", "deepinfra"),
+            patch.object(settings, "deepinfra_api_key", "df-" + ("x" * 32)),
+            patch.object(DeepInfraChatClient, "classify_intent", fake_classify),
+            patch.object(DeepInfraChatClient, "refine_response", side_effect=RuntimeError("skip external refine")),
+        ):
+            client, _ = self.api_client()
+            headers = self.auth_headers(client)
+            response = client.post(
+                "/api/chat/assistant",
+                json={"message": "show my ticket history"},
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(calls)
+        self.assertIn("show my ticket history", calls[0]["message"])
+        self.assertIn("recent_tickets", calls[0]["allowed"])
+        payload = response.json()["response"]
+        self.assertEqual(payload["source"], "Tickets")
+        self.assertEqual(payload["answer"], "Here is your ticket history:")
+
     def test_chatbot_ticket_history_includes_past_tickets(self):
         client, _ = self.api_client()
         headers = self.auth_headers(client)
@@ -935,6 +1133,111 @@ class VendorWorkflowTest(unittest.TestCase):
         self.assertEqual(payload["source"], "Tickets")
         self.assertEqual(payload["answer"], "Here is your ticket history:")
         self.assertIn("table", payload)
+
+    def test_chatbot_deepinfra_first_uses_previous_context_for_clarification(self):
+        calls = []
+
+        def fake_classify(_client, message, _allowed):
+            calls.append(message)
+            return {"intent": "unsupported", "confidence": 0.3, "entities": {}}
+
+        with (
+            patch.object(settings, "ai_provider", "deepinfra"),
+            patch.object(settings, "deepinfra_api_key", "df-" + ("x" * 32)),
+            patch.object(DeepInfraChatClient, "classify_intent", fake_classify),
+            patch.object(DeepInfraChatClient, "refine_response", side_effect=RuntimeError("skip external refine")),
+        ):
+            client, _ = self.api_client()
+            headers = self.auth_headers(client)
+            response = client.post(
+                "/api/chat/assistant",
+                json={
+                    "message": "I mean earlier history",
+                    "history": [
+                        {"role": "user", "text": "show my ticket history"},
+                        {"role": "assistant", "text": "Here is your ticket history:", "source": "Tickets"},
+                    ],
+                },
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(calls)
+        self.assertIn("Previous chat topic: tickets", calls[0])
+        payload = response.json()["response"]
+        self.assertEqual(payload["source"], "Tickets")
+        self.assertEqual(payload["answer"], "Here is your ticket history:")
+
+    def test_chatbot_follow_up_show_more_uses_previous_vendor_context(self):
+        calls = []
+
+        def fake_classify(_client, message, _allowed):
+            calls.append(message)
+            return {"intent": "unsupported", "confidence": 0.2, "entities": {}}
+
+        with (
+            patch.object(settings, "ai_provider", "deepinfra"),
+            patch.object(settings, "deepinfra_api_key", "df-" + ("x" * 32)),
+            patch.object(DeepInfraChatClient, "classify_intent", fake_classify),
+            patch.object(DeepInfraChatClient, "refine_response", side_effect=RuntimeError("skip external refine")),
+        ):
+            client, _ = self.api_client()
+            headers = self.auth_headers(client)
+            created = client.post(
+                "/api/vendors",
+                json=self.vendor_payload(
+                    vendor_name="Follow Up Food Vendor",
+                    contact_person="Farah",
+                    email="followup.food@example.com",
+                    contact_details="9000090000",
+                    service_provided="Food",
+                ),
+                headers=headers,
+            )
+            self.assertEqual(created.status_code, 200)
+            response = client.post(
+                "/api/chat/assistant",
+                json={
+                    "message": "show more",
+                    "history": [
+                        {"role": "user", "text": "show food vendors"},
+                        {"role": "assistant", "text": "I found food vendors. Here are the details.", "source": "Vendors"},
+                    ],
+                },
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(calls)
+        self.assertIn("Previous chat topic: vendors", calls[0])
+        payload = response.json()["response"]
+        self.assertEqual(payload["source"], "Vendors")
+        self.assertIn("table", payload)
+        self.assertIn("vendors", payload["answer"])
+
+    def test_chatbot_deepinfra_intent_still_enforces_employee_vendor_access(self):
+        with (
+            patch.object(settings, "ai_provider", "deepinfra"),
+            patch.object(settings, "deepinfra_api_key", "df-" + ("x" * 32)),
+            patch.object(
+                DeepInfraChatClient,
+                "classify_intent",
+                return_value={"intent": "vendor_billing", "confidence": 0.96, "entities": {}},
+            ),
+            patch.object(DeepInfraChatClient, "refine_response", side_effect=RuntimeError("skip external refine")),
+        ):
+            client, _ = self.api_client()
+            headers = self.auth_headers(client, "employee@company.com", "employee123")
+            response = client.post(
+                "/api/chat/assistant",
+                json={"message": "show vendor billing"},
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()["response"]
+        self.assertEqual(payload["source"], "Access control")
+        self.assertEqual(payload["answer"], "You do not have access to that information.")
 
     def test_chatbot_understands_misspelled_ticket_creation(self):
         client, _ = self.api_client()
@@ -990,6 +1293,37 @@ class VendorWorkflowTest(unittest.TestCase):
         self.assertEqual(own_response.json()["response"]["table"]["rows"][0]["Ticket ID"], "IT-1001")
         self.assertIn("currently", own_response.json()["response"]["answer"])
         self.assertEqual(other_response.json()["response"]["answer"], "I could not find that ticket for your access level.")
+
+    def test_chatbot_ticket_status_uses_full_sentence_subject(self):
+        client, _ = self.api_client()
+        headers = self.auth_headers(client, "employee@company.com", "employee123")
+        created = client.post(
+            "/api/tickets",
+            json=self.ticket_payload(
+                ticket_type="Admin",
+                title="Vendor issue follow-up",
+                description="Need help with vendor support response.",
+                category="Vendor",
+                status="Waiting Approval",
+                approval_required=True,
+            ),
+            headers=headers,
+        )
+        self.assertEqual(created.status_code, 200)
+        created_status = created.json()["ticket"]["status"]
+
+        response = client.post(
+            "/api/chat/assistant",
+            json={"message": "status of my vendor issue ticket"},
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()["response"]
+        self.assertEqual(payload["source"], "Tickets")
+        self.assertEqual(payload["answer"], "Here is the matching ticket status:")
+        self.assertEqual(payload["table"]["rows"][0]["Title"], "Vendor issue follow-up")
+        self.assertEqual(payload["table"]["rows"][0]["Status"], created_status)
 
     def test_chatbot_ticket_status_update_requires_confirmation(self):
         client, _ = self.api_client()
@@ -1677,6 +2011,17 @@ class VendorWorkflowTest(unittest.TestCase):
         )
         self.assertEqual(status.status_code, 200)
         self.assertEqual(status.json()["task"]["status"], "Completed")
+        dashboard = client.get("/api/dashboard", headers=headers)
+        self.assertEqual(dashboard.status_code, 200)
+        chart = next(item for item in dashboard.json()["charts"] if item["id"] == "tasks_by_status")
+        chart_counts = {item["name"]: item["value"] for item in chart["data"]}
+        tasks_response = client.get("/api/tasks", headers=headers)
+        self.assertEqual(tasks_response.status_code, 200)
+        task_counts = {}
+        for task_item in tasks_response.json()["tasks"]:
+            task_counts[task_item["status"]] = task_counts.get(task_item["status"], 0) + 1
+        self.assertEqual(chart_counts["Completed"], task_counts.get("Completed", 0))
+        self.assertEqual(chart_counts["Open"], task_counts.get("Open", 0))
 
         deleted = client.delete(f"/api/tasks/{task['id']}", headers=headers)
         self.assertEqual(deleted.status_code, 200)
@@ -4106,6 +4451,64 @@ class VendorWorkflowTest(unittest.TestCase):
         self.assertEqual(download.status_code, 200)
         self.assertIn("admin,10", download.text)
 
+        preview = client.get(f"/api/reports/{report['id']}/preview", headers=headers)
+        self.assertEqual(preview.status_code, 200)
+        preview_payload = preview.json()
+        self.assertEqual(preview_payload["report"]["report_id"], report["report_id"])
+        self.assertEqual(preview_payload["preview"]["columns"], ["name", "total"])
+        self.assertEqual(preview_payload["preview"]["row_count"], 1)
+        self.assertEqual(preview_payload["preview"]["rows"][0]["name"], "admin")
+        self.assertEqual(preview_payload["preview"]["rows"][0]["total"], "10")
+
+        text_import = client.post(
+            "/api/reports/import",
+            json=self.report_import_payload(
+                report_name="Admin Text Preview",
+                report_type="Operations",
+                department="Admin",
+                filename="admin-notes.txt",
+                content=b"First line\nSecond line\n",
+            ),
+            headers=headers,
+        )
+        self.assertEqual(text_import.status_code, 200)
+        text_report = text_import.json()["report"]
+        text_preview = client.get(f"/api/reports/{text_report['id']}/preview", headers=headers)
+        self.assertEqual(text_preview.status_code, 200)
+        self.assertEqual(text_preview.json()["preview"]["preview_type"], "txt")
+        self.assertIn("Second line", text_preview.json()["preview"]["text"])
+
+        pdf_import = client.post(
+            "/api/reports/import",
+            json=self.report_import_payload(
+                report_name="Admin PDF Preview",
+                report_type="Operations",
+                department="Admin",
+                filename="admin-preview.pdf",
+                content=b"%PDF-1.4\npreview\n",
+            ),
+            headers=headers,
+        )
+        self.assertEqual(pdf_import.status_code, 200)
+        pdf_report = pdf_import.json()["report"]
+        pdf_preview = client.get(f"/api/reports/{pdf_report['id']}/preview", headers=headers)
+        self.assertEqual(pdf_preview.status_code, 200)
+        self.assertEqual(pdf_preview.json()["preview"]["preview_type"], "pdf")
+        self.assertTrue(pdf_preview.json()["preview"]["content_base64"])
+        pdf_preview_file = client.get(f"/api/reports/{pdf_report['id']}/preview-file", headers=headers)
+        self.assertEqual(pdf_preview_file.status_code, 200)
+        self.assertEqual(pdf_preview_file.headers["content-type"], "application/pdf")
+        self.assertIn("inline", pdf_preview_file.headers["content-disposition"])
+        self.assertEqual(pdf_preview_file.content, b"%PDF-1.4\npreview\n")
+
+        Path(pdf_report["stored_file_path"]).unlink()
+        missing_pdf_preview = client.get(f"/api/reports/{pdf_report['id']}/preview", headers=headers)
+        self.assertEqual(missing_pdf_preview.status_code, 200)
+        self.assertEqual(missing_pdf_preview.json()["preview"]["message"], "File not found. Please re-upload the report.")
+        missing_pdf_file = client.get(f"/api/reports/{pdf_report['id']}/preview-file", headers=headers)
+        self.assertEqual(missing_pdf_file.status_code, 404)
+        self.assertEqual(missing_pdf_file.json()["detail"], "File not found. Please re-upload the report.")
+
         exported = client.get(
             "/api/reports/export?department=Admin&file_type=CSV",
             headers=headers,
@@ -4177,10 +4580,12 @@ class VendorWorkflowTest(unittest.TestCase):
         report_id = it_import.json()["report"]["id"]
         finance_delete = client.delete(f"/api/reports/{report_id}", headers=finance_headers)
         employee_download = client.get(f"/api/reports/{report_id}/download", headers=employee_headers)
+        employee_preview = client.get(f"/api/reports/{report_id}/preview", headers=employee_headers)
         admin_delete = client.delete(f"/api/reports/{report_id}", headers=admin_headers)
 
         self.assertEqual(finance_delete.status_code, 403)
         self.assertEqual(employee_download.status_code, 403)
+        self.assertEqual(employee_preview.status_code, 403)
         self.assertEqual(admin_delete.status_code, 200)
 
     def test_audit_log_records_approver_identity(self):
