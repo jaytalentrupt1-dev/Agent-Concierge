@@ -41,6 +41,12 @@ HEADER_MAP = {
     "employeeemail": "employee_email",
     "email": "employee_email",
     "department": "department",
+    "branch": "branch",
+    "branchlocation": "branch",
+    "officebranch": "branch",
+    "location": "branch",
+    "officelocation": "branch",
+    "city": "branch",
     "category": "category",
     "vendorormerchant": "vendor_merchant",
     "vendormerchant": "vendor_merchant",
@@ -64,6 +70,7 @@ EMPTY_EXPENSE = {
     "employee_name": "",
     "employee_email": "",
     "department": "",
+    "branch": "Pune",
     "category": "Miscellaneous",
     "vendor_merchant": "Unknown Merchant",
     "amount": "",
@@ -150,6 +157,7 @@ def _build_preview(rows: list[list[str]], *, filename: str, file_type: str) -> d
 
 def _normalize_import_expense(expense: dict[str, str | bool]) -> list[str]:
     warnings = []
+    expense["branch"] = _normalize_branch(str(expense.get("branch", "")).strip())
     category = str(expense.get("category", "")).strip()
     matched_category = _match_choice(category, EXPENSE_CATEGORIES)
     if not matched_category:
@@ -262,6 +270,12 @@ def _match_choice(value: str, choices: set[str]) -> str:
         if choice.lower() == normalized:
             return choice
     return ""
+
+
+def _normalize_branch(value: str) -> str:
+    branches = {"pune": "Pune", "ahmedabad": "Ahmedabad", "vadodara": "Vadodara", "noida": "Noida"}
+    normalized = str(value or "").strip().lower()
+    return branches.get(normalized, "Pune")
 
 
 def _header_key(header: str) -> str:

@@ -572,6 +572,251 @@ class VendorWorkflowTest(unittest.TestCase):
         self.assertEqual(employee_response.status_code, 200)
         self.assertEqual(employee_response.json()["charts"], [])
 
+    def test_vendor_branch_defaults_filters_and_conci_ai_context(self):
+        with patch.object(settings, "deepinfra_api_key", ""):
+            client, _ = self.api_client()
+            admin_headers = self.auth_headers(client)
+
+            ahmedabad_vendor = client.post(
+                "/api/vendors",
+                json=self.vendor_payload(
+                    vendor_name="Ahmedabad Food Partner",
+                    email="ahmedabad.food@example.com",
+                    service_provided="Food",
+                    branch="Ahmedabad",
+                ),
+                headers=admin_headers,
+            )
+            self.assertEqual(ahmedabad_vendor.status_code, 200)
+            self.assertEqual(ahmedabad_vendor.json()["vendor"]["branch"], "Ahmedabad")
+
+            default_vendor = client.post(
+                "/api/vendors",
+                json=self.vendor_payload(
+                    vendor_name="Default Pune Vendor",
+                    email="default.pune.vendor@example.com",
+                    service_provided="Transport",
+                ),
+                headers=admin_headers,
+            )
+            self.assertEqual(default_vendor.status_code, 200)
+            self.assertEqual(default_vendor.json()["vendor"]["branch"], "Pune")
+
+            ahmedabad_vendors = client.get("/api/vendors?branch=Ahmedabad", headers=admin_headers)
+            self.assertEqual(ahmedabad_vendors.status_code, 200)
+            self.assertTrue(any(vendor["vendor_name"] == "Ahmedabad Food Partner" for vendor in ahmedabad_vendors.json()["vendors"]))
+            self.assertFalse(any(vendor["vendor_name"] == "Default Pune Vendor" for vendor in ahmedabad_vendors.json()["vendors"]))
+
+            pune_vendors = client.get("/api/vendors?branch=Pune", headers=admin_headers)
+            self.assertEqual(pune_vendors.status_code, 200)
+            self.assertTrue(any(vendor["vendor_name"] == "Default Pune Vendor" for vendor in pune_vendors.json()["vendors"]))
+            self.assertFalse(any(vendor["vendor_name"] == "Ahmedabad Food Partner" for vendor in pune_vendors.json()["vendors"]))
+
+            chat = client.post(
+                "/api/chat/assistant",
+                json={"message": "show Ahmedabad food vendors"},
+                headers=admin_headers,
+            )
+            self.assertEqual(chat.status_code, 200)
+            self.assertEqual(chat.json()["source"], "Vendors")
+            self.assertTrue(
+                any(row.get("Vendor Name") == "Ahmedabad Food Partner" for row in chat.json()["response"]["table"]["rows"])
+            )
+
+    def test_inventory_branch_defaults_filters_and_conci_ai_context(self):
+        with patch.object(settings, "deepinfra_api_key", ""):
+            client, _ = self.api_client()
+            admin_headers = self.auth_headers(client)
+
+            ahmedabad_item = client.post(
+                "/api/inventory",
+                json=self.inventory_payload(
+                    item_id="INV-AHM-1001",
+                    item_name="Ahmedabad Laptop",
+                    employee_name="Ahmedabad User",
+                    serial_no="AHM-SR-001",
+                    model_no="Latitude 7440",
+                    location="Ahmedabad Office",
+                    status="Submitted to Vendor",
+                    branch="Ahmedabad",
+                ),
+                headers=admin_headers,
+            )
+            self.assertEqual(ahmedabad_item.status_code, 200)
+            self.assertEqual(ahmedabad_item.json()["inventory_item"]["branch"], "Ahmedabad")
+
+            default_item = client.post(
+                "/api/inventory",
+                json=self.inventory_payload(
+                    item_id="INV-PUNE-1001",
+                    item_name="Default Pune Laptop",
+                    employee_name="Pune User",
+                    serial_no="PUNE-SR-001",
+                    model_no="ThinkPad T14",
+                    location="Pune Office",
+                    status="In Use",
+                ),
+                headers=admin_headers,
+            )
+            self.assertEqual(default_item.status_code, 200)
+            self.assertEqual(default_item.json()["inventory_item"]["branch"], "Pune")
+
+            ahmedabad_inventory = client.get("/api/inventory?branch=Ahmedabad", headers=admin_headers)
+            self.assertEqual(ahmedabad_inventory.status_code, 200)
+            self.assertTrue(any(item["item_id"] == "INV-AHM-1001" for item in ahmedabad_inventory.json()["inventory_items"]))
+            self.assertFalse(any(item["item_id"] == "INV-PUNE-1001" for item in ahmedabad_inventory.json()["inventory_items"]))
+
+            pune_inventory = client.get("/api/inventory?branch=Pune", headers=admin_headers)
+            self.assertEqual(pune_inventory.status_code, 200)
+            self.assertTrue(any(item["item_id"] == "INV-PUNE-1001" for item in pune_inventory.json()["inventory_items"]))
+            self.assertFalse(any(item["item_id"] == "INV-AHM-1001" for item in pune_inventory.json()["inventory_items"]))
+
+            chat = client.post(
+                "/api/chat/assistant",
+                json={"message": "Ahmedabad submitted to vendor items"},
+                headers=admin_headers,
+            )
+            self.assertEqual(chat.status_code, 200)
+            self.assertEqual(chat.json()["source"], "Inventory")
+            rows = chat.json()["response"]["table"]["rows"]
+            self.assertTrue(any(row.get("Serial No.") == "AHM-SR-001" and row.get("Branch") == "Ahmedabad" for row in rows))
+            self.assertFalse(any(row.get("Serial No.") == "PUNE-SR-001" for row in rows))
+
+    def test_ticket_expense_and_travel_branch_filters_and_conci_ai_context(self):
+        with patch.object(settings, "deepinfra_api_key", ""):
+            client, _ = self.api_client()
+            admin_headers = self.auth_headers(client)
+
+            noida_ticket = client.post(
+                "/api/tickets",
+                json=self.ticket_payload(title="Noida VPN issue", branch="Noida"),
+                headers=admin_headers,
+            )
+            self.assertEqual(noida_ticket.status_code, 200)
+            self.assertEqual(noida_ticket.json()["ticket"]["branch"], "Noida")
+
+            pune_ticket = client.post(
+                "/api/tickets",
+                json=self.ticket_payload(title="Pune VPN issue"),
+                headers=admin_headers,
+            )
+            self.assertEqual(pune_ticket.status_code, 200)
+            self.assertEqual(pune_ticket.json()["ticket"]["branch"], "Pune")
+
+            noida_tickets = client.get("/api/tickets?branch=Noida", headers=admin_headers)
+            self.assertEqual(noida_tickets.status_code, 200)
+            self.assertTrue(any(ticket["title"] == "Noida VPN issue" for ticket in noida_tickets.json()["tickets"]))
+            self.assertFalse(any(ticket["title"] == "Pune VPN issue" for ticket in noida_tickets.json()["tickets"]))
+
+            ticket_chat = client.post(
+                "/api/chat/assistant",
+                json={"message": "Show Noida tickets"},
+                headers=admin_headers,
+            )
+            self.assertEqual(ticket_chat.status_code, 200)
+            self.assertEqual(ticket_chat.json()["source"], "Tickets")
+            self.assertTrue(
+                any(row.get("Title") == "Noida VPN issue" and row.get("Branch") == "Noida" for row in ticket_chat.json()["response"]["table"]["rows"])
+            )
+
+            ahmedabad_expense = client.post(
+                "/api/expenses",
+                json=self.expense_payload(
+                    employee_name="Finance User",
+                    employee_email="finance@company.com",
+                    department="Finance",
+                    vendor_merchant="Ahmedabad Hotel",
+                    branch="Ahmedabad",
+                ),
+                headers=admin_headers,
+            )
+            self.assertEqual(ahmedabad_expense.status_code, 200)
+            self.assertEqual(ahmedabad_expense.json()["expense"]["branch"], "Ahmedabad")
+
+            default_expense = client.post(
+                "/api/expenses",
+                json=self.expense_payload(
+                    employee_name="Operations User",
+                    employee_email="ops@example.com",
+                    vendor_merchant="Pune Taxi",
+                ),
+                headers=admin_headers,
+            )
+            self.assertEqual(default_expense.status_code, 200)
+            self.assertEqual(default_expense.json()["expense"]["branch"], "Pune")
+
+            ahmedabad_expenses = client.get("/api/expenses?branch=Ahmedabad", headers=admin_headers)
+            self.assertEqual(ahmedabad_expenses.status_code, 200)
+            self.assertTrue(any(expense["vendor_merchant"] == "Ahmedabad Hotel" for expense in ahmedabad_expenses.json()["expenses"]))
+            self.assertFalse(any(expense["vendor_merchant"] == "Pune Taxi" for expense in ahmedabad_expenses.json()["expenses"]))
+
+            csv_content = (
+                "expense_id,employee_name,employee_email,department,location,category,vendor_or_merchant,amount,currency,expense_date,payment_mode,receipt_status,status,approval_required\n"
+                "EXP-BRANCH-001,Finance User,finance@company.com,Finance,Vadodara,Travel,Vadodara Cab,1200,INR,2026-05-11,Corporate Card,Attached,Submitted,yes\n"
+            ).encode()
+            preview = client.post(
+                "/api/expenses/import/preview",
+                json={
+                    "filename": "expenses-branch.csv",
+                    "content_base64": base64.b64encode(csv_content).decode("ascii"),
+                },
+                headers=admin_headers,
+            )
+            self.assertEqual(preview.status_code, 200)
+            self.assertEqual(preview.json()["rows"][0]["expense"]["branch"], "Vadodara")
+
+            expense_chat = client.post(
+                "/api/chat/assistant",
+                json={"message": "Ahmedabad expenses this month"},
+                headers=admin_headers,
+            )
+            self.assertEqual(expense_chat.status_code, 200)
+            self.assertEqual(expense_chat.json()["source"], "Expenses")
+            self.assertTrue(
+                any(row.get("Expense") == ahmedabad_expense.json()["expense"]["expense_id"] and row.get("Branch") == "Ahmedabad" for row in expense_chat.json()["response"]["table"]["rows"])
+            )
+
+            vadodara_travel = client.post(
+                "/api/travel",
+                json=self.travel_payload(
+                    travel_id="TRV-VAD-1001",
+                    branch="Vadodara",
+                    destination_from="Vadodara",
+                    destination_to="Mumbai",
+                ),
+                headers=admin_headers,
+            )
+            self.assertEqual(vadodara_travel.status_code, 200)
+            self.assertEqual(vadodara_travel.json()["travel_record"]["branch"], "Vadodara")
+
+            pune_travel = client.post(
+                "/api/travel",
+                json=self.travel_payload(
+                    travel_id="TRV-PUNE-1001",
+                    destination_from="Pune",
+                    destination_to="Delhi",
+                ),
+                headers=admin_headers,
+            )
+            self.assertEqual(pune_travel.status_code, 200)
+            self.assertEqual(pune_travel.json()["travel_record"]["branch"], "Pune")
+
+            vadodara_travels = client.get("/api/travel?branch=Vadodara", headers=admin_headers)
+            self.assertEqual(vadodara_travels.status_code, 200)
+            self.assertTrue(any(record["travel_id"] == "TRV-VAD-1001" for record in vadodara_travels.json()["travel_records"]))
+            self.assertFalse(any(record["travel_id"] == "TRV-PUNE-1001" for record in vadodara_travels.json()["travel_records"]))
+
+            travel_chat = client.post(
+                "/api/chat/assistant",
+                json={"message": "Vadodara travel records"},
+                headers=admin_headers,
+            )
+            self.assertEqual(travel_chat.status_code, 200)
+            self.assertEqual(travel_chat.json()["source"], "Travel")
+            self.assertTrue(
+                any(row.get("Travel ID") == "TRV-VAD-1001" and row.get("Branch") == "Vadodara" for row in travel_chat.json()["response"]["table"]["rows"])
+            )
+
     def test_dashboard_and_chatbot_use_same_overdue_task_count(self):
         with (
             patch.object(settings, "ai_provider", "mock"),
@@ -2593,8 +2838,31 @@ class VendorWorkflowTest(unittest.TestCase):
         self.assertEqual(item["ram"], "16 GB")
         self.assertEqual(item["disk"], "")
         self.assertEqual(item["location"], "Pune")
+        self.assertEqual(item["branch"], "Pune")
         self.assertEqual(item["status"], "In Use")
         self.assertEqual(item["notes"], "")
+
+    def test_inventory_import_preview_accepts_branch_column(self):
+        client, _ = self.api_client()
+        headers = self.auth_headers(client)
+        csv_content = (
+            "Employee,Serial Number,Model Number,RAM,Office Location,Branch\n"
+            "Asha Mehta,DL-5440-099,Latitude 5440,16 GB,Noida Office,Noida\n"
+        ).encode("utf-8")
+
+        response = client.post(
+            "/api/inventory/import/preview",
+            json=self.inventory_import_payload("inventory-branch.csv", csv_content),
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        preview = response.json()
+        self.assertFalse(preview["errors"])
+        self.assertEqual(preview["detected_columns"], ["Employee name", "Serial No.", "Model No.", "RAM", "Location", "Branch"])
+        item = preview["rows"][0]["item"]
+        self.assertEqual(item["location"], "Noida Office")
+        self.assertEqual(item["branch"], "Noida")
 
     def test_inventory_import_preview_detects_headers_after_title_rows(self):
         client, _ = self.api_client()
@@ -2656,6 +2924,7 @@ class VendorWorkflowTest(unittest.TestCase):
         self.assertEqual(first_item["ram"], "16 GB")
         self.assertEqual(first_item["disk"], "")
         self.assertEqual(first_item["location"], "Pune")
+        self.assertEqual(first_item["branch"], "Pune")
         self.assertEqual(first_item["status"], "In Use")
         self.assertEqual(first_item["notes"], "")
 
@@ -2700,6 +2969,7 @@ class VendorWorkflowTest(unittest.TestCase):
         self.assertEqual(imported_item["ram"], "8 GB")
         self.assertEqual(imported_item["disk"], "")
         self.assertEqual(imported_item["location"], "")
+        self.assertEqual(imported_item["branch"], "Pune")
         self.assertEqual(imported_item["status"], "In Use")
         self.assertEqual(imported_item["notes"], "")
 

@@ -1272,3 +1272,35 @@ Use this flow for the current main demo:
    - Risky actions are queued for human approval.
    - External vendor communication is never auto-sent.
    - File deletion, payments, travel bookings, contracts, confidential sharing, legal/compliance, emergency/safety, and policy exceptions require approval or human decision.
+
+## 20. Multi-Branch Support
+
+Branch-wise support now covers Vendors, Inventory, Tickets, Expenses, and Travel & Calendar.
+
+- Vendor records include a `branch` field with options: Pune, Ahmedabad, Vadodara, and Noida.
+- Existing vendor rows are migrated/backfilled with `branch = "Pune"` when the field is missing or blank.
+- The Vendor add/edit modal includes a branch dropdown, defaulting to Pune.
+- The Vendor table shows the branch column, and Vendor filters include branch.
+- `/api/vendors?branch=...` returns branch-filtered vendor data while preserving existing vendor role access.
+- Conci AI vendor answers can understand branch-specific questions such as “Show Ahmedabad vendors” and include branch in vendor detail tables.
+- Inventory records include a `branch` field with the same branch options, and existing inventory rows default/backfill to Pune.
+- The Inventory add/edit modal includes a branch dropdown; Inventory list filters include branch; the table, import preview, and import history item preview show Branch when space allows.
+- `/api/inventory?branch=...` returns branch-filtered inventory data while preserving existing inventory role access.
+- Inventory imports accept branch columns such as `Branch`, `Branch Location`, `Office Branch`, or `City`; missing branch defaults to Pune.
+- Conci AI inventory answers can understand branch-specific questions such as “Show Noida inventory”, “How many laptops are in Pune?”, and “Ahmedabad submitted to vendor items”.
+- Ticket records include `branch`, old rows default to Pune, create/edit forms include a branch dropdown, Ticket Directory shows Branch, and filters include Branch.
+- `/api/tickets?branch=...` returns branch-filtered tickets after applying the logged-in user’s ticket visibility rules.
+- Expense records include `branch`, old rows default to Pune, add/edit forms include a branch dropdown, Expenses table/filter/import preview include Branch, and expense import accepts branch/location columns with missing branch defaulting to Pune.
+- `/api/expenses?branch=...` returns branch-filtered expenses after existing expense role access checks.
+- Travel records include `branch`, old rows default to Pune, add/edit forms include a branch dropdown, Travel Records table/filter include Branch, and calendar event filtering can use the related travel record branch.
+- `/api/travel?branch=...` returns branch-filtered travel records for Admin and Finance Manager access.
+- Conci AI filters role-scoped tickets, expenses, and travel records by branch when the user asks questions like “Show Noida tickets”, “Ahmedabad expenses this month”, “Pune travel records”, or “Vadodara pending tickets”.
+
+Latest verification:
+
+```bash
+backend/.venv/bin/python -m pytest backend/tests
+npm run build
+```
+
+Result: backend tests passed (`190 passed`), and frontend production build passed.

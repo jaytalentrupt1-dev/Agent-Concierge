@@ -7,6 +7,25 @@ from pydantic import AliasChoices, BaseModel, Field, field_validator, model_vali
 
 
 Role = Literal["admin", "it_manager", "finance_manager", "employee"]
+BranchName = Literal["Pune", "Ahmedabad", "Vadodara", "Noida"]
+
+
+class BranchScopedModel(BaseModel):
+    branch: BranchName = "Pune"
+
+    @field_validator("branch", mode="before")
+    @classmethod
+    def normalize_branch(cls, value):
+        if value is None or str(value).strip() == "":
+            return "Pune"
+        normalized = str(value).strip()
+        lookup = {
+            "pune": "Pune",
+            "ahmedabad": "Ahmedabad",
+            "vadodara": "Vadodara",
+            "noida": "Noida",
+        }
+        return lookup.get(normalized.lower(), normalized)
 
 RouteTaskType = Literal[
     "meeting_management",
@@ -75,7 +94,7 @@ class PasswordResetRequest(BaseModel):
     password: str = Field(min_length=6, max_length=200)
 
 
-class VendorCreateRequest(BaseModel):
+class VendorCreateRequest(BranchScopedModel):
     vendor_name: str = Field(min_length=2, max_length=160)
     contact_person: str = Field(min_length=2, max_length=120)
     email: str = Field(min_length=3, max_length=254)
@@ -254,7 +273,7 @@ CalendarEventType = Literal["Meeting", "Vendor Meeting", "Travel", "Reminder", "
 CalendarEventStatus = Literal["Scheduled", "Completed", "Cancelled", "Tentative"]
 
 
-class TicketCreateRequest(BaseModel):
+class TicketCreateRequest(BranchScopedModel):
     ticket_type: TicketType = Field(validation_alias=AliasChoices("ticket_type", "type"))
     title: str = Field(min_length=3, max_length=180)
     description: str = Field(min_length=3, max_length=1000)
@@ -270,6 +289,11 @@ class TicketCreateRequest(BaseModel):
         if value == "":
             return None
         return value
+
+    @field_validator("title", "description", "category", "branch")
+    @classmethod
+    def trim_ticket_text(cls, value: str) -> str:
+        return value.strip()
 
 
 class TicketUpdateRequest(TicketCreateRequest):
@@ -311,7 +335,7 @@ class TaskStatusUpdateRequest(BaseModel):
     status: TaskStatus
 
 
-class ExpenseCreateRequest(BaseModel):
+class ExpenseCreateRequest(BranchScopedModel):
     employee_name: str = Field(default="", max_length=120)
     employee_email: str = Field(default="", max_length=254)
     department: str = Field(min_length=2, max_length=120)
@@ -336,6 +360,7 @@ class ExpenseCreateRequest(BaseModel):
         "payment_mode",
         "receipt_attachment_name",
         "notes",
+        "branch",
     )
     @classmethod
     def trim_expense_text(cls, value: str) -> str:
@@ -364,7 +389,7 @@ class ExpenseStatusUpdateRequest(BaseModel):
     status: ExpenseStatus
 
 
-class InventoryItemRequest(BaseModel):
+class InventoryItemRequest(BranchScopedModel):
     item_id: str = Field(default="", max_length=80)
     item_name: str = Field(default="", max_length=160)
     category: InventoryCategory = "Other"
@@ -412,6 +437,7 @@ class InventoryItemRequest(BaseModel):
         "unit",
         "condition",
         "location",
+        "branch",
         "assigned_to",
         "department",
         "vendor",
@@ -454,7 +480,7 @@ class InventoryImportCreateRequest(BaseModel):
     items: list[InventoryItemRequest] = Field(min_length=1, max_length=5000)
 
 
-class TravelRecordRequest(BaseModel):
+class TravelRecordRequest(BranchScopedModel):
     travel_id: str = Field(default="", max_length=80)
     employee_name: str = Field(min_length=2, max_length=120)
     employee_email: str = Field(min_length=3, max_length=254)
@@ -484,7 +510,7 @@ class TravelRecordRequest(BaseModel):
             raise ValueError("Enter a valid employee email address")
         return normalized
 
-    @field_validator("travel_id", "employee_name", "department", "destination_from", "destination_to", "purpose", "notes", "google_calendar_event_id", "google_sync_status")
+    @field_validator("travel_id", "employee_name", "department", "destination_from", "destination_to", "purpose", "notes", "google_calendar_event_id", "google_sync_status", "branch")
     @classmethod
     def trim_travel_text(cls, value: str) -> str:
         return value.strip()

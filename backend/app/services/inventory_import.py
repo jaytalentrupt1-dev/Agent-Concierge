@@ -51,7 +51,10 @@ HEADER_MAP = {
     "ssd": "disk",
     "hdd": "disk",
     "officelocation": "location",
-    "branch": "location",
+    "branch": "branch",
+    "branchlocation": "branch",
+    "officebranch": "branch",
+    "city": "branch",
     "assetstatus": "status",
     "remarks": "notes",
     "comment": "notes",
@@ -88,6 +91,7 @@ EMPTY_INVENTORY_ITEM = {
     "unit": "pcs",
     "condition": "Good",
     "location": "",
+    "branch": "Pune",
     "assigned_to": "",
     "department": "",
     "purchase_date": "",
@@ -110,6 +114,7 @@ NEW_IMPORT_FIELDS = {
     "ram",
     "disk",
     "location",
+    "branch",
     "status",
     "notes",
 }
@@ -144,6 +149,14 @@ DISPLAY_FIELD_LABELS = {
     "warranty_end_date": "Warranty End Date",
     "vendor": "Vendor",
     "minimum_stock_level": "Minimum Stock Level",
+    "branch": "Branch",
+}
+
+VALID_BRANCHES = {
+    "pune": "Pune",
+    "ahmedabad": "Ahmedabad",
+    "vadodara": "Vadodara",
+    "noida": "Noida",
 }
 
 LEGACY_REQUIRED_FIELDS = {
@@ -441,6 +454,10 @@ def _build_preview(rows: list[list[str]], *, filename: str, file_type: str) -> d
 
 def _normalize_import_item(item: dict[str, str], *, has_new_template: bool) -> list[str]:
     warnings = []
+    branch, branch_warning = _normalized_branch(item.get("branch", ""))
+    item["branch"] = branch
+    if branch_warning:
+        warnings.append(branch_warning)
     if has_new_template:
         item["item_id"] = item.get("item_id") or _generated_item_id(item)
         item["item_name"] = item.get("item_name") or item.get("employee_name") or item.get("model_no") or "Inventory Item"
@@ -470,6 +487,16 @@ def _normalize_import_item(item: dict[str, str], *, has_new_template: bool) -> l
     if not item.get("minimum_stock_level", "").strip():
         item["minimum_stock_level"] = "0"
     return warnings
+
+
+def _normalized_branch(value: str) -> tuple[str, str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return "Pune", ""
+    normalized = VALID_BRANCHES.get(raw.lower())
+    if normalized:
+        return normalized, ""
+    return "Pune", f'Branch "{raw}" defaulted to Pune'
 
 
 def _validate_import_item(item: dict[str, str], *, required_fields: dict[str, str], has_new_template: bool) -> list[str]:

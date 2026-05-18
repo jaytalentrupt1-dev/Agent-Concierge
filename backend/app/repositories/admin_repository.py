@@ -44,6 +44,17 @@ def _normalize_assigned_role(role: str) -> str:
     }.get(role, role)
 
 
+DEFAULT_BRANCH = "Pune"
+VALID_BRANCHES = {"pune": "Pune", "ahmedabad": "Ahmedabad", "vadodara": "Vadodara", "noida": "Noida"}
+
+
+def _normalize_branch(value: Any) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return DEFAULT_BRANCH
+    return VALID_BRANCHES.get(normalized.lower(), normalized)
+
+
 class AdminRepository:
     def __init__(self, database_path: str | Path):
         self.db = Database(database_path)
@@ -194,6 +205,7 @@ class AdminRepository:
                     email TEXT NOT NULL,
                     contact_details TEXT NOT NULL,
                     office_address TEXT NOT NULL,
+                    branch TEXT NOT NULL DEFAULT 'Pune',
                     service_provided TEXT NOT NULL,
                     start_date TEXT NOT NULL,
                     end_date TEXT NOT NULL,
@@ -213,6 +225,7 @@ class AdminRepository:
                     title TEXT NOT NULL,
                     description TEXT NOT NULL,
                     category TEXT NOT NULL,
+                    branch TEXT NOT NULL DEFAULT 'Pune',
                     priority TEXT NOT NULL,
                     status TEXT NOT NULL,
                     requester_user_id INTEGER,
@@ -250,6 +263,7 @@ class AdminRepository:
                     employee_email TEXT NOT NULL,
                     employee_role TEXT NOT NULL,
                     department TEXT NOT NULL,
+                    branch TEXT NOT NULL DEFAULT 'Pune',
                     category TEXT NOT NULL,
                     vendor_merchant TEXT NOT NULL,
                     amount REAL NOT NULL,
@@ -281,6 +295,7 @@ class AdminRepository:
                     unit TEXT NOT NULL,
                     condition TEXT NOT NULL,
                     location TEXT NOT NULL,
+                    branch TEXT NOT NULL DEFAULT 'Pune',
                     assigned_to TEXT NOT NULL,
                     department TEXT NOT NULL,
                     purchase_date TEXT NOT NULL,
@@ -324,6 +339,7 @@ class AdminRepository:
                     employee_name TEXT NOT NULL,
                     employee_email TEXT NOT NULL,
                     department TEXT NOT NULL,
+                    branch TEXT NOT NULL DEFAULT 'Pune',
                     destination_from TEXT NOT NULL,
                     destination_to TEXT NOT NULL,
                     travel_start_date TEXT NOT NULL,
@@ -474,6 +490,9 @@ class AdminRepository:
             return
         if "billing_amount" not in columns:
             conn.execute("ALTER TABLE vendors ADD COLUMN billing_amount INTEGER NOT NULL DEFAULT 0")
+        if "branch" not in columns:
+            conn.execute("ALTER TABLE vendors ADD COLUMN branch TEXT NOT NULL DEFAULT 'Pune'")
+        conn.execute("UPDATE vendors SET branch = 'Pune' WHERE branch IS NULL OR TRIM(branch) = ''")
 
     def ensure_vendor_schema(self) -> None:
         with self.db.connection() as conn:
@@ -548,6 +567,9 @@ class AdminRepository:
             return
         if "requester_role" not in columns:
             conn.execute("ALTER TABLE tickets ADD COLUMN requester_role TEXT NOT NULL DEFAULT ''")
+        if "branch" not in columns:
+            conn.execute("ALTER TABLE tickets ADD COLUMN branch TEXT NOT NULL DEFAULT 'Pune'")
+        conn.execute("UPDATE tickets SET branch = 'Pune' WHERE branch IS NULL OR TRIM(branch) = ''")
 
     def ensure_ticket_schema(self) -> None:
         with self.db.connection() as conn:
@@ -562,10 +584,12 @@ class AdminRepository:
         required_columns = {
             "employee_role": "TEXT NOT NULL DEFAULT ''",
             "policy_exceptions_json": "TEXT NOT NULL DEFAULT '[]'",
+            "branch": "TEXT NOT NULL DEFAULT 'Pune'",
         }
         for column, definition in required_columns.items():
             if column not in existing:
                 conn.execute(f"ALTER TABLE expenses ADD COLUMN {column} {definition}")
+        conn.execute("UPDATE expenses SET branch = 'Pune' WHERE branch IS NULL OR TRIM(branch) = ''")
 
     def ensure_expense_schema(self) -> None:
         with self.db.connection() as conn:
@@ -588,6 +612,7 @@ class AdminRepository:
             "warranty_end_date": "TEXT NOT NULL DEFAULT ''",
             "vendor": "TEXT NOT NULL DEFAULT ''",
             "minimum_stock_level": "INTEGER NOT NULL DEFAULT 0",
+            "branch": "TEXT NOT NULL DEFAULT 'Pune'",
             "employee_name": "TEXT NOT NULL DEFAULT ''",
             "serial_no": "TEXT NOT NULL DEFAULT ''",
             "model_no": "TEXT NOT NULL DEFAULT ''",
@@ -599,6 +624,7 @@ class AdminRepository:
         for column, definition in required_columns.items():
             if column not in existing:
                 conn.execute(f"ALTER TABLE inventory_items ADD COLUMN {column} {definition}")
+        conn.execute("UPDATE inventory_items SET branch = 'Pune' WHERE branch IS NULL OR TRIM(branch) = ''")
 
     def ensure_inventory_schema(self) -> None:
         with self.db.connection() as conn:
@@ -628,6 +654,7 @@ class AdminRepository:
             row["name"] for row in conn.execute("PRAGMA table_info(travel_records)").fetchall()
         }
         travel_columns = {
+            "branch": "TEXT NOT NULL DEFAULT 'Pune'",
             "google_calendar_event_id": "TEXT NOT NULL DEFAULT ''",
             "google_sync_status": "TEXT NOT NULL DEFAULT 'Not Synced'",
             "google_last_synced_at": "TEXT NOT NULL DEFAULT ''",
@@ -635,6 +662,8 @@ class AdminRepository:
         for column, definition in travel_columns.items():
             if travel_existing and column not in travel_existing:
                 conn.execute(f"ALTER TABLE travel_records ADD COLUMN {column} {definition}")
+        if travel_existing:
+            conn.execute("UPDATE travel_records SET branch = 'Pune' WHERE branch IS NULL OR TRIM(branch) = ''")
 
         event_existing = {
             row["name"] for row in conn.execute("PRAGMA table_info(calendar_events)").fetchall()
@@ -1979,11 +2008,11 @@ class AdminRepository:
                 """
                 INSERT INTO vendors (
                     vendor_name, contact_person, email, contact_details,
-                    office_address, service_provided, start_date, end_date,
+                    office_address, branch, service_provided, start_date, end_date,
                     billing_amount, billing_cycle, status, created_by_user_id, created_at,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     vendor["vendor_name"],
@@ -1991,6 +2020,7 @@ class AdminRepository:
                     vendor["email"].lower(),
                     vendor["contact_details"],
                     vendor["office_address"],
+                    _normalize_branch(vendor.get("branch")),
                     vendor["service_provided"],
                     str(vendor["start_date"]),
                     str(vendor["end_date"]) if vendor.get("end_date") else "",
@@ -2019,6 +2049,7 @@ class AdminRepository:
             "email",
             "contact_details",
             "office_address",
+            "branch",
             "service_provided",
             "start_date",
             "end_date",
@@ -2034,6 +2065,8 @@ class AdminRepository:
         for field in fields:
             if field == "email":
                 values.append(str(vendor[field]).lower())
+            elif field == "branch":
+                values.append(_normalize_branch(vendor[field]))
             elif field in {"start_date", "end_date"}:
                 values.append(str(vendor[field]) if vendor.get(field) else "")
             elif field == "billing_amount":
@@ -2068,12 +2101,12 @@ class AdminRepository:
                 """
                 INSERT INTO expenses (
                     expense_id, employee_user_id, employee_name, employee_email,
-                    employee_role, department, category, vendor_merchant, amount,
+                    employee_role, department, branch, category, vendor_merchant, amount,
                     currency, expense_date, payment_mode, receipt_status,
                     receipt_attachment_name, notes, status, approval_required,
                     approved_by, policy_exceptions_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     expense_id,
@@ -2082,6 +2115,7 @@ class AdminRepository:
                     expense["employee_email"].lower(),
                     expense.get("employee_role", ""),
                     expense["department"],
+                    _normalize_branch(expense.get("branch")),
                     expense["category"],
                     expense["vendor_merchant"],
                     float(expense["amount"]),
@@ -2133,6 +2167,7 @@ class AdminRepository:
             "employee_email",
             "employee_role",
             "department",
+            "branch",
             "category",
             "vendor_merchant",
             "amount",
@@ -2162,6 +2197,8 @@ class AdminRepository:
                 values.append(1 if updates[field] else 0)
             elif field == "amount":
                 values.append(float(updates[field]))
+            elif field == "branch":
+                values.append(_normalize_branch(updates[field]))
             elif field == "employee_email":
                 values.append(str(updates[field]).lower())
             elif field == "expense_date":
@@ -2251,6 +2288,7 @@ class AdminRepository:
         normalized["unit"] = str(normalized.get("unit") or "unit").strip()
         normalized["condition"] = str(normalized.get("condition") or "Good").strip()
         normalized["location"] = str(normalized.get("location") or "").strip()
+        normalized["branch"] = _normalize_branch(normalized.get("branch"))
         normalized["department"] = str(normalized.get("department", "") or "").strip()
         normalized["vendor"] = str(normalized.get("vendor", "") or "").strip()
         normalized["minimum_stock_level"] = int(normalized.get("minimum_stock_level") or 0)
@@ -2276,11 +2314,11 @@ class AdminRepository:
                 INSERT INTO inventory_items (
                     item_id, item_name, category, subcategory, brand, model,
                     serial_number, quantity, unit, condition, location, assigned_to,
-                    department, purchase_date, warranty_end_date, vendor,
+                    branch, department, purchase_date, warranty_end_date, vendor,
                     minimum_stock_level, employee_name, serial_no, model_no, ram, disk,
                     status, notes, import_batch_id, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     item["item_id"],
@@ -2295,6 +2333,7 @@ class AdminRepository:
                     item["condition"],
                     item["location"],
                     item.get("assigned_to", ""),
+                    item["branch"],
                     item["department"],
                     str(item["purchase_date"]) if item.get("purchase_date") else "",
                     str(item["warranty_end_date"]) if item.get("warranty_end_date") else "",
@@ -2370,6 +2409,7 @@ class AdminRepository:
             "unit",
             "condition",
             "location",
+            "branch",
             "assigned_to",
             "department",
             "purchase_date",
@@ -2528,20 +2568,21 @@ class AdminRepository:
             cursor = conn.execute(
                 """
                 INSERT INTO travel_records (
-                    travel_id, employee_name, employee_email, department,
+                    travel_id, employee_name, employee_email, department, branch,
                     destination_from, destination_to, travel_start_date,
                     travel_end_date, purpose, travel_mode, estimated_budget,
                     actual_spend, number_of_trips, approval_status, policy_status,
                     booking_status, notes, google_calendar_event_id,
                     google_sync_status, google_last_synced_at, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     travel_id,
                     record["employee_name"],
                     record["employee_email"].lower(),
                     record["department"],
+                    _normalize_branch(record.get("branch")),
                     record["destination_from"],
                     record["destination_to"],
                     str(record["travel_start_date"]),
@@ -2599,6 +2640,7 @@ class AdminRepository:
             "employee_name",
             "employee_email",
             "department",
+            "branch",
             "destination_from",
             "destination_to",
             "travel_start_date",
@@ -2629,6 +2671,8 @@ class AdminRepository:
                 values.append(int(record[field]))
             elif field == "employee_email":
                 values.append(str(record[field]).lower())
+            elif field == "branch":
+                values.append(_normalize_branch(record[field]))
             elif field in {"travel_start_date", "travel_end_date", "google_last_synced_at"}:
                 values.append(str(record[field]) if record.get(field) else "")
             else:
@@ -3048,12 +3092,12 @@ class AdminRepository:
             cursor = conn.execute(
                 """
                 INSERT INTO tickets (
-                    ticket_id, ticket_type, title, description, category, priority,
+                    ticket_id, ticket_type, title, description, category, branch, priority,
                     status, requester_user_id, requester_name, requester_email,
                     requester_role, assigned_role, assigned_team, due_date, approval_required,
                     created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     ticket_id,
@@ -3061,6 +3105,7 @@ class AdminRepository:
                     ticket["title"],
                     ticket.get("description", ""),
                     ticket["category"],
+                    _normalize_branch(ticket.get("branch")),
                     ticket["priority"],
                     ticket.get("status", "Open"),
                     ticket.get("requester_user_id"),
@@ -3099,6 +3144,7 @@ class AdminRepository:
             "title",
             "description",
             "category",
+            "branch",
             "priority",
             "status",
             "assigned_role",
@@ -3116,6 +3162,8 @@ class AdminRepository:
                 values.append(1 if updates[key] else 0)
             elif key == "due_date":
                 values.append(str(updates[key]) if updates.get(key) else "")
+            elif key == "branch":
+                values.append(_normalize_branch(updates[key]))
             else:
                 values.append(updates[key])
         values.extend([utc_now(), ticket_id])
@@ -3497,6 +3545,7 @@ class AdminRepository:
     def _vendor_from_row(self, row: Any) -> dict:
         item = dict(row)
         item["billing_amount"] = int(item.get("billing_amount") or 0)
+        item["branch"] = _normalize_branch(item.get("branch"))
         return item
 
     def _ticket_from_row(self, row: Any) -> dict:
@@ -3504,6 +3553,7 @@ class AdminRepository:
         item["approval_required"] = bool(item["approval_required"])
         item["requester_role"] = _normalize_role_value(item.get("requester_role", ""))
         item["assigned_role"] = _normalize_assigned_role(item["assigned_role"])
+        item["branch"] = _normalize_branch(item.get("branch"))
         return item
 
     def _notification_from_row(self, row: Any) -> dict:
@@ -3517,6 +3567,7 @@ class AdminRepository:
         item["amount"] = float(item.get("amount") or 0)
         item["approval_required"] = bool(item["approval_required"])
         item["employee_role"] = _normalize_role_value(item.get("employee_role", ""))
+        item["branch"] = _normalize_branch(item.get("branch"))
         item["policy_exceptions"] = _loads(item.pop("policy_exceptions_json"), [])
         return item
 
@@ -3530,6 +3581,7 @@ class AdminRepository:
         item["model_no"] = item.get("model_no") or item.get("model") or ""
         item["ram"] = item.get("ram") or ""
         item["disk"] = item.get("disk") or ""
+        item["branch"] = _normalize_branch(item.get("branch"))
         return item
 
     def _inventory_import_batch_from_row(self, row: Any) -> dict:
@@ -3545,6 +3597,7 @@ class AdminRepository:
         item["estimated_budget"] = float(item.get("estimated_budget") or 0)
         item["actual_spend"] = float(item.get("actual_spend") or 0)
         item["number_of_trips"] = int(item.get("number_of_trips") or 0)
+        item["branch"] = _normalize_branch(item.get("branch"))
         return item
 
     def _calendar_event_from_row(self, row: Any) -> dict:

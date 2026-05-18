@@ -289,6 +289,31 @@ def create_app(database_path: str | None = None) -> FastAPI:
             raise HTTPException(status_code=403, detail="Travel & Calendar access requires Admin or Finance Manager role")
         return user
 
+    BRANCHES = ("Pune", "Ahmedabad", "Vadodara", "Noida")
+
+    def normalize_branch(value: str | None) -> str:
+        text = str(value or "").strip()
+        if not text or text.lower() == "all":
+            return "All"
+        lookup = {branch.lower(): branch for branch in BRANCHES}
+        return lookup.get(text.lower(), text)
+
+    def branch_from_text(text: str) -> str:
+        normalized = str(text or "").lower()
+        for branch in BRANCHES:
+            if re.search(rf"\b{re.escape(branch.lower())}\b", normalized):
+                return branch
+        return "All"
+
+    def item_matches_branch(item: dict, branch: str = "All") -> bool:
+        normalized = normalize_branch(branch)
+        if normalized == "All":
+            return True
+        return normalize_branch(item.get("branch")) == normalized
+
+    def filter_by_branch(items: list[dict], branch: str = "All") -> list[dict]:
+        return [item for item in items if item_matches_branch(item, branch)]
+
     def can_view_expense(user: dict, expense: dict) -> bool:
         if can_view_all(user) or can_manage_finance(user):
             return True
@@ -693,8 +718,8 @@ def create_app(database_path: str | None = None) -> FastAPI:
             for item in sorted(counts.values(), key=lambda row: row["sort_key"])
         ]
 
-    def vendor_billing_by_month() -> list[dict]:
-        return monthly_sum_chart(repository.list_vendors(), "start_date", "billing_amount")
+    def vendor_billing_by_month(vendors: list[dict] | None = None) -> list[dict]:
+        return monthly_sum_chart(vendors if vendors is not None else repository.list_vendors(), "start_date", "billing_amount")
 
     def current_month_prefix() -> str:
         return datetime.now(timezone.utc).strftime("%Y-%m")
@@ -758,7 +783,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
         allowed = {"Food", "Transport", "IT Services", "Office Supplies", "Security", "Other"}
         return normalized if normalized in allowed else "Other"
 
-    def vendor_billing_dashboard_for(user: dict) -> dict | None:
+    def vendor_billing_dashboard_for(user: dict, branch: str = "All") -> dict | None:
         if can_view_own_only(user):
             return None
 
@@ -766,7 +791,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
         now = datetime.now(timezone.utc)
         active_vendors = [
             vendor for vendor in repository.list_vendors()
-            if str(vendor.get("status", "")).lower() == "active"
+            if str(vendor.get("status", "")).lower() == "active" and item_matches_branch(vendor, branch)
         ]
         visible_vendors = active_vendors if can_view_billing else [
             vendor for vendor in active_vendors
@@ -792,6 +817,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 "contact_person": vendor.get("contact_person") if can_view_billing else None,
                 "contact_details": vendor.get("contact_details") if can_view_billing else None,
                 "service_provided": vendor["service_provided"],
+                "branch": vendor.get("branch", "Pune"),
                 "billing_amount": int(vendor.get("billing_amount") or 0) if can_view_billing else None,
                 "billing_cycle": vendor.get("billing_cycle") if can_view_billing else "",
                 "monthly_equivalent": vendor_monthly_equivalent(vendor) if can_view_billing else None,
@@ -807,6 +833,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 "id": vendor["id"],
                 "vendor_name": vendor["vendor_name"],
                 "service_provided": vendor["service_provided"],
+                "branch": vendor.get("branch", "Pune"),
                 "billing_amount": int(vendor.get("billing_amount") or 0),
                 "billing_cycle": vendor.get("billing_cycle"),
                 "monthly_equivalent": vendor_monthly_equivalent(vendor),
@@ -1004,7 +1031,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
             summary_cards = [
                 dashboard_card("total_tickets", "Total Tickets", len(tickets)),
                 dashboard_card("open_tasks", "Open Tasks", open_task_count),
-                dashboard_card("active_vendors", "Active Vendors", len([vendor for vendor in vendors if vendor.get("status") == "active"])),
+                dashboard_card("active_vendors", "Active Vendors", len([vendor for vendor in vendors if str(vendor.get("status") or "").lower() == "active"])),
                 dashboard_card("inventory_items", "Inventory Items", len(inventory_items)),
                 dashboard_card(
                     "monthly_expenses",
@@ -1112,7 +1139,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
     }
     CHATBOT_DOMAIN_TERMS = {
         "activity", "approval", "approvals", "asset", "assets", "billing", "calendar", "calendars",
-        "device", "devices", "event", "events", "expense", "expenses", "inventory", "report", "reports",
+        "device", "devices", "event", "events", "expense", "expenses", "inventory", "item", "items", "report", "reports",
         "request", "requests", "spend", "supplier", "suppliers", "task", "tasks", "ticket", "tickets",
         "travel", "trip", "vendor", "vendors",
     }
@@ -1621,8 +1648,9 @@ def create_app(database_path: str | None = None) -> FastAPI:
         for ticket in tickets[:limit]:
             due = chatbot_date(ticket.get("due_date"))
             due_text = f" - due {due}" if due else ""
+            branch = ticket.get("branch") or "Pune"
             bullets.append(
-                f"{ticket.get('ticket_id')}: {ticket.get('title')} - {ticket.get('status')} - {ticket.get('priority')}{due_text}"
+                f"{ticket.get('ticket_id')}: {ticket.get('title')} - {branch} - {ticket.get('status')} - {ticket.get('priority')}{due_text}"
             )
         return bullets
 
@@ -1660,9 +1688,9 @@ def create_app(database_path: str | None = None) -> FastAPI:
 
     def chatbot_vendor_table(vendors: list[dict], include_billing: bool = False, limit: int | None = None) -> dict:
         visible_vendors = vendors if limit is None else vendors[:limit]
-        columns = ["Vendor Name", "Service", "Contact", "Phone", "Status"]
+        columns = ["Vendor Name", "Service", "Branch", "Contact", "Phone", "Status"]
         if include_billing:
-            columns.insert(4, "Billing")
+            columns.insert(5, "Billing")
         if any(vendor.get("end_date") for vendor in visible_vendors):
             columns.insert(-1, "End Date")
         rows = []
@@ -1670,6 +1698,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
             row = {
                 "Vendor Name": vendor.get("vendor_name") or "-",
                 "Service": vendor.get("service_provided") or "-",
+                "Branch": vendor.get("branch") or "Pune",
                 "Contact": chatbot_first_value(vendor, ["contact_person", "contactPerson", "contact"]),
                 "Phone": chatbot_first_value(
                     vendor,
@@ -1728,14 +1757,15 @@ def create_app(database_path: str | None = None) -> FastAPI:
             employee = item.get("employee_name") or item.get("assigned_to") or item.get("item_name") or "Inventory item"
             serial = item.get("serial_no") or item.get("serial_number") or "No serial"
             model = item.get("model_no") or item.get("model") or "No model"
-            bullets.append(f"{employee} - {serial} - {model} - {item.get('status')} - {item.get('location')}")
+            branch = item.get("branch") or "Pune"
+            bullets.append(f"{employee} - {serial} - {model} - {branch} - {item.get('status')} - {item.get('location')}")
         return bullets
 
     def chatbot_expense_bullets(expenses: list[dict], limit: int = 6) -> list[str]:
         return [
             (
                 f"{expense.get('expense_id')}: {expense.get('category')} - {chatbot_money(expense.get('amount'))} "
-                f"- {expense.get('status')} - {chatbot_date(expense.get('expense_date'))}"
+                f"- {expense.get('branch') or 'Pune'} - {expense.get('status')} - {chatbot_date(expense.get('expense_date'))}"
             )
             for expense in expenses[:limit]
         ]
@@ -1744,7 +1774,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
         return [
             (
                 f"{record.get('travel_id')}: {record.get('employee_name')} - {record.get('destination_from')} to "
-                f"{record.get('destination_to')} - {record.get('approval_status')} - {chatbot_money(record.get('actual_spend'))}"
+                f"{record.get('destination_to')} - {record.get('branch') or 'Pune'} - {record.get('approval_status')} - {chatbot_money(record.get('actual_spend'))}"
             )
             for record in records[:limit]
         ]
@@ -1808,7 +1838,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
             selected = [ticket for ticket in selected if ticket.get("priority") == "Critical"]
         elif "high" in text:
             selected = [ticket for ticket in selected if ticket.get("priority") == "High"]
-        return chatbot_filter_by_terms(selected, text, ["ticket_id", "title", "category", "requester_name", "assigned_team", "status", "priority"])
+        return chatbot_filter_by_terms(selected, text, ["ticket_id", "title", "category", "branch", "requester_name", "assigned_team", "status", "priority"])
 
     def chatbot_select_tasks(tasks: list[dict], text: str) -> list[dict]:
         selected = tasks
@@ -1839,7 +1869,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
         return chatbot_filter_by_terms(
             selected,
             text,
-            ["employee_name", "assigned_to", "item_name", "serial_no", "serial_number", "model_no", "model", "ram", "disk", "location", "status", "notes"],
+            ["employee_name", "assigned_to", "item_name", "serial_no", "serial_number", "model_no", "model", "ram", "disk", "location", "branch", "status", "notes"],
         )
 
     def chatbot_select_expenses(expenses: list[dict], text: str) -> list[dict]:
@@ -1850,7 +1880,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
             selected = [expense for expense in selected if expense.get("status") == "Approved"]
         elif "paid" in text:
             selected = [expense for expense in selected if expense.get("status") in {"Paid", "Reimbursed"}]
-        return chatbot_filter_by_terms(selected, text, ["expense_id", "employee_name", "department", "category", "vendor_or_merchant", "status"])
+        return chatbot_filter_by_terms(selected, text, ["expense_id", "employee_name", "department", "branch", "category", "vendor_or_merchant", "status"])
 
     def chatbot_select_travel(records: list[dict], text: str) -> list[dict]:
         selected = records
@@ -1858,16 +1888,17 @@ def create_app(database_path: str | None = None) -> FastAPI:
             selected = [record for record in selected if record.get("approval_status") in {"Approved", "Booked", "Pending Approval"}]
         elif "completed" in text:
             selected = [record for record in selected if record.get("approval_status") == "Completed"]
-        return chatbot_filter_by_terms(selected, text, ["travel_id", "employee_name", "department", "destination_from", "destination_to", "purpose", "approval_status"])
+        return chatbot_filter_by_terms(selected, text, ["travel_id", "employee_name", "department", "branch", "destination_from", "destination_to", "purpose", "approval_status"])
 
     def chatbot_ticket_table(tickets: list[dict], limit: int = 6) -> dict:
         return {
-            "columns": ["Ticket ID", "Title", "Type", "Status", "Priority", "Due Date"],
+            "columns": ["Ticket ID", "Title", "Type", "Branch", "Status", "Priority", "Due Date"],
             "rows": [
                 {
                     "Ticket ID": ticket.get("ticket_id") or "-",
                     "Title": ticket.get("title") or "-",
                     "Type": ticket.get("ticket_type") or "-",
+                    "Branch": ticket.get("branch") or "Pune",
                     "Status": ticket.get("status") or "-",
                     "Priority": ticket.get("priority") or "-",
                     "Due Date": chatbot_date(ticket.get("due_date")) or "-",
@@ -1878,7 +1909,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
 
     def chatbot_inventory_table(items: list[dict], limit: int = 5) -> dict:
         return {
-            "columns": ["Employee Name", "Serial No.", "Model No.", "Status", "Location", "Updated"],
+            "columns": ["Employee Name", "Serial No.", "Model No.", "Status", "Location", "Branch", "Updated"],
             "rows": [
                 {
                     "Employee Name": item.get("employee_name") or item.get("assigned_to") or "-",
@@ -1886,6 +1917,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
                     "Model No.": item.get("model_no") or item.get("model") or "-",
                     "Status": item.get("status") or "-",
                     "Location": item.get("location") or "-",
+                    "Branch": item.get("branch") or "Pune",
                     "Updated": chatbot_date(item.get("updated_at")) or chatbot_date(item.get("created_at")) or "-",
                 }
                 for item in items[:limit]
@@ -1909,11 +1941,12 @@ def create_app(database_path: str | None = None) -> FastAPI:
 
     def chatbot_expense_table(expenses: list[dict], limit: int = 8) -> dict:
         return {
-            "columns": ["Expense", "Category", "Amount", "Status", "Date"],
+            "columns": ["Expense", "Category", "Branch", "Amount", "Status", "Date"],
             "rows": [
                 {
                     "Expense": expense.get("expense_id") or expense.get("vendor_or_merchant") or "-",
                     "Category": expense.get("category") or "-",
+                    "Branch": expense.get("branch") or "Pune",
                     "Amount": chatbot_money(expense.get("amount")),
                     "Status": expense.get("status") or "-",
                     "Date": chatbot_date(expense.get("expense_date")) or "-",
@@ -1924,11 +1957,12 @@ def create_app(database_path: str | None = None) -> FastAPI:
 
     def chatbot_travel_table(records: list[dict], limit: int = 8) -> dict:
         return {
-            "columns": ["Travel ID", "Employee", "Route", "Status", "Spend", "Start"],
+            "columns": ["Travel ID", "Employee", "Branch", "Route", "Status", "Spend", "Start"],
             "rows": [
                 {
                     "Travel ID": record.get("travel_id") or "-",
                     "Employee": record.get("employee_name") or "-",
+                    "Branch": record.get("branch") or "Pune",
                     "Route": f"{record.get('destination_from') or '-'} to {record.get('destination_to') or '-'}",
                     "Status": record.get("approval_status") or "-",
                     "Spend": chatbot_money(record.get("actual_spend")),
@@ -2682,19 +2716,28 @@ def create_app(database_path: str | None = None) -> FastAPI:
         if detected_intent == "utility_time":
             return chatbot_time_response()
 
-        tickets = visible_tickets_for(user)
+        requested_branch = branch_from_text(text)
+        tickets = filter_by_branch(visible_tickets_for(user), requested_branch)
         tasks = visible_tasks_for(user)
         approvals_for_user = visible_approvals_for(user)
         audit_logs = visible_audit_logs_for(user)
         reports = visible_reports_for(user)
         dashboard_payload = dashboard_payload_for(user)
         can_view_inventory = can_view_all(user) or can_manage_it(user) or can_manage_finance(user)
-        inventory_items = repository.list_inventory_items() if can_view_inventory else []
+        inventory_items = filter_by_branch(repository.list_inventory_items(), requested_branch) if can_view_inventory else []
         can_view_finance = can_view_all(user) or can_manage_finance(user)
-        expenses = visible_expenses_for(user) if can_view_finance else []
-        travel_records = repository.list_travel_records() if can_view_finance else []
+        expenses = filter_by_branch(visible_expenses_for(user), requested_branch) if can_view_finance else []
+        travel_records = filter_by_branch(repository.list_travel_records(), requested_branch) if can_view_finance else []
         calendar_events = repository.list_calendar_events() if can_view_finance else []
-        vendor_dashboard = vendor_billing_dashboard_for(user)
+        if can_view_finance and requested_branch != "All":
+            travel_ids_for_branch = {record.get("travel_id") for record in travel_records}
+            branch_text = requested_branch.lower()
+            calendar_events = [
+                event for event in calendar_events
+                if event.get("related_travel_id") in travel_ids_for_branch
+                or branch_text in str(event.get("location") or "").lower()
+            ]
+        vendor_dashboard = vendor_billing_dashboard_for(user, requested_branch)
 
         agent_response = chatbot_agent_response_for(
             user,
@@ -2718,12 +2761,23 @@ def create_app(database_path: str | None = None) -> FastAPI:
             )
 
         asks_user_data = detected_intent == "users_settings" or chatbot_has_any(text, ["user", "users", "setting", "settings", "account", "role"])
-        asks_vendor = detected_intent in {"vendor_billing", "vendor_count", "active_vendors", "vendor_details"} or chatbot_has_any(text, ["vendor", "vendors", "supplier", "suppliers", "billing", "bill"])
+        submitted_vendor_inventory_request = (
+            chatbot_has_any(text, ["submitted to vendor", "submitted vendor"])
+            and chatbot_has_any(text, ["item", "items", "device", "devices", "inventory", "asset", "assets"])
+        )
+        asks_vendor = (
+            detected_intent in {"vendor_billing", "vendor_count", "active_vendors", "vendor_details"}
+            or chatbot_has_any(text, ["vendor", "vendors", "supplier", "suppliers", "billing", "bill"])
+        ) and not submitted_vendor_inventory_request
         asks_expense = detected_intent in {"expenses_this_month", "expenses_by_month", "expenses_last_month", "expenses_by_category", "pending_expenses"} or chatbot_has_any(text, ["expense", "expenses", "spend", "reimbursement", "receipt", "merchant"])
         asks_travel = detected_intent in {"travel_spend", "travel_recent_records", "calendar_events"} or chatbot_has_any(text, ["travel", "trip", "calendar", "event"])
         asks_ticket = detected_intent in {"recent_tickets", "open_tickets", "my_tickets"} or chatbot_has_any(text, ["ticket", "tickets"])
         asks_task = detected_intent in {"open_tasks", "my_tasks", "overdue_tasks"} or chatbot_has_any(text, ["task", "tasks"])
-        asks_inventory = detected_intent in {"inventory_summary", "inventory_in_use", "inventory_submitted_vendor"} or chatbot_has_any(text, ["inventory", "stock", "device", "devices", "asset", "assets", "laptop"])
+        asks_inventory = (
+            detected_intent in {"inventory_summary", "inventory_in_use", "inventory_submitted_vendor"}
+            or submitted_vendor_inventory_request
+            or chatbot_has_any(text, ["inventory", "stock", "device", "devices", "asset", "assets", "laptop"])
+        )
         asks_report = detected_intent == "reports" or chatbot_has_any(text, ["report", "reports"])
         asks_approval = detected_intent == "pending_approvals" or chatbot_has_any(text, ["approval", "approvals", "pending request", "pending requests", "waiting"])
         asks_activity = chatbot_has_any(text, ["activity", "audit", "recent"])
@@ -2754,7 +2808,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 billing_rows = vendor_dashboard.get("current_billing", {}).get("rows", []) if vendor_dashboard else []
                 expected_rows = vendor_dashboard.get("expected_billing", []) if vendor_dashboard else []
                 if detected_intent == "vendor_count":
-                    selected_vendors = chatbot_filter_by_terms(vendors, text, ["vendor_name", "service_provided", "status"])
+                    selected_vendors = chatbot_filter_by_terms(vendors, text, ["vendor_name", "service_provided", "branch", "status"])
                     service_label = " food" if "food" in text else ""
                     response = chatbot_response(
                         f"You have {len(selected_vendors)} active{service_label} vendors visible for your access level.",
@@ -2802,7 +2856,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
                         table=chatbot_vendor_table(closing, include_billing=True, limit=6),
                     ) if closing else chatbot_empty_message("No vendors found for that request.", "Vendors closing soon")
                 else:
-                    selected_vendors = chatbot_filter_by_terms(vendors, text, ["vendor_name", "service_provided", "status"])
+                    selected_vendors = chatbot_filter_by_terms(vendors, text, ["vendor_name", "service_provided", "branch", "status"])
                     if not selected_vendors:
                         if "food" in text:
                             response = chatbot_empty_message("No food vendors found.", "Vendors")
@@ -3107,7 +3161,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 continue
             if status != "All" and report.get("status") != status:
                 continue
-            if uploaded_date and str(report.get("uploaded_at", "")).slice(0, 10) != uploaded_date:
+            if uploaded_date and str(report.get("uploaded_at", ""))[:10] != uploaded_date:
                 continue
             filtered.append(report)
         return filtered
@@ -3861,8 +3915,8 @@ def create_app(database_path: str | None = None) -> FastAPI:
         return {"task": deleted}
 
     @app.get("/api/tickets")
-    def list_tickets(user: dict = Depends(current_user)) -> dict:
-        return {"tickets": visible_tickets_for(user)}
+    def list_tickets(branch: str = Query(default="All"), user: dict = Depends(current_user)) -> dict:
+        return {"tickets": filter_by_branch(visible_tickets_for(user), branch)}
 
     @app.get("/api/notifications")
     def list_notifications(user: dict = Depends(current_user)) -> dict:
@@ -3918,6 +3972,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 "ticket_id": ticket["ticket_id"],
                 "ticket_type": ticket["ticket_type"],
                 "category": ticket["category"],
+                "branch": ticket["branch"],
                 "assigned_role": ticket["assigned_role"],
                 "actor_user_id": user["id"],
                 "actor_role": user["role"],
@@ -3960,6 +4015,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 "ticket_id": ticket["ticket_id"],
                 "ticket_type": ticket["ticket_type"],
                 "category": ticket["category"],
+                "branch": ticket["branch"],
                 "assigned_role": ticket["assigned_role"],
                 "actor_user_id": user["id"],
                 "actor_role": user["role"],
@@ -3999,8 +4055,8 @@ def create_app(database_path: str | None = None) -> FastAPI:
         return {"ticket": ticket}
 
     @app.get("/api/expenses")
-    def list_expenses(user: dict = Depends(current_user)) -> dict:
-        return {"expenses": visible_expenses_for(user)}
+    def list_expenses(branch: str = Query(default="All"), user: dict = Depends(current_user)) -> dict:
+        return {"expenses": filter_by_branch(visible_expenses_for(user), branch)}
 
     @app.post("/api/expenses")
     def create_expense(payload: ExpenseCreateRequest, user: dict = Depends(current_user)) -> dict:
@@ -4018,6 +4074,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
             details={
                 "expense_id": expense["expense_id"],
                 "category": expense["category"],
+                "branch": expense["branch"],
                 "amount": expense["amount"],
                 "currency": expense["currency"],
                 "status": expense["status"],
@@ -4068,6 +4125,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 "file_name": payload.filename,
                 "imported_count": len(imported_expenses),
                 "expense_ids": [expense["expense_id"] for expense in imported_expenses],
+                "branches": sorted({expense.get("branch", "Pune") for expense in imported_expenses}),
                 "actor_user_id": user["id"],
                 "actor_role": user["role"],
             },
@@ -4106,6 +4164,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
             details={
                 "expense_id": expense["expense_id"],
                 "category": expense["category"],
+                "branch": expense["branch"],
                 "amount": expense["amount"],
                 "status": expense["status"],
                 "policy_exceptions": expense["policy_exceptions"],
@@ -4148,8 +4207,8 @@ def create_app(database_path: str | None = None) -> FastAPI:
         return {"expense": expense}
 
     @app.get("/api/travel")
-    def list_travel_records(_: dict = Depends(travel_user)) -> dict:
-        return {"travel_records": repository.list_travel_records()}
+    def list_travel_records(branch: str = Query(default="All"), _: dict = Depends(travel_user)) -> dict:
+        return {"travel_records": filter_by_branch(repository.list_travel_records(), branch)}
 
     @app.get("/api/travel/summary")
     def travel_summary(_: dict = Depends(travel_user)) -> dict:
@@ -4174,6 +4233,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 "travel_id": record["travel_id"],
                 "employee_email": record["employee_email"],
                 "department": record["department"],
+                "branch": record["branch"],
                 "destination_to": record["destination_to"],
                 "actual_spend": record["actual_spend"],
                 "policy_status": record["policy_status"],
@@ -4205,6 +4265,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 "travel_id": record["travel_id"],
                 "employee_email": record["employee_email"],
                 "department": record["department"],
+                "branch": record["branch"],
                 "destination_to": record["destination_to"],
                 "actual_spend": record["actual_spend"],
                 "policy_status": record["policy_status"],
@@ -4431,12 +4492,18 @@ def create_app(database_path: str | None = None) -> FastAPI:
         return {"report": deleted}
 
     @app.get("/api/vendors")
-    def list_vendors(_: dict = Depends(vendor_viewer_user)) -> dict:
-        return {"vendors": repository.list_vendors()}
+    def list_vendors(
+        branch: str = Query(default="All"),
+        _: dict = Depends(vendor_viewer_user),
+    ) -> dict:
+        return {"vendors": filter_by_branch(repository.list_vendors(), branch)}
 
     @app.get("/api/inventory")
-    def list_inventory(_: dict = Depends(inventory_viewer_user)) -> dict:
-        return {"inventory_items": repository.list_inventory_items()}
+    def list_inventory(
+        branch: str = Query(default="All"),
+        _: dict = Depends(inventory_viewer_user),
+    ) -> dict:
+        return {"inventory_items": filter_by_branch(repository.list_inventory_items(), branch)}
 
     @app.post("/api/inventory")
     def create_inventory_item(
@@ -4456,6 +4523,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 "item_id": item["item_id"],
                 "item_name": item["item_name"],
                 "category": item["category"],
+                "branch": item["branch"],
                 "actor_user_id": user["id"],
                 "actor_role": user["role"],
             },

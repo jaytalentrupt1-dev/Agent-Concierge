@@ -265,6 +265,8 @@ const taskDepartmentFilterOptions = ["All", ...taskDepartmentOptions];
 const taskAssignedRoleOptions = ["admin", "it_manager", "finance_manager", "employee"];
 const taskAssignedRoleFilterOptions = ["All", ...taskAssignedRoleOptions];
 const TASK_PAGE_SIZE = 10;
+const branchOptions = ["Pune", "Ahmedabad", "Vadodara", "Noida"];
+const branchFilterOptions = ["All", ...branchOptions];
 const expenseCategoryOptions = [
   "Travel",
   "Food",
@@ -305,6 +307,7 @@ const expenseImportColumns = [
   ["employee_name", "Employee Name"],
   ["employee_email", "Employee Email"],
   ["department", "Department"],
+  ["branch", "Branch"],
   ["category", "Category"],
   ["vendor_merchant", "Vendor/Merchant"],
   ["amount", "Amount"],
@@ -327,6 +330,7 @@ const inventoryImportTemplateHeaders = [
   "ram",
   "disk",
   "location",
+  "branch",
   "status",
   "notes"
 ];
@@ -338,6 +342,7 @@ const inventoryImportTemplateRows = [
     "16 GB",
     "512 GB SSD",
     "Pune Office",
+    "Pune",
     "In Use",
     "Sample IT equipment row"
   ],
@@ -348,6 +353,7 @@ const inventoryImportTemplateRows = [
     "16 GB",
     "1 TB SSD",
     "Mumbai Office",
+    "Ahmedabad",
     "Extra",
     "Sample spare laptop row"
   ],
@@ -358,6 +364,7 @@ const inventoryImportTemplateRows = [
     "32 GB",
     "1 TB SSD",
     "Bengaluru Office",
+    "Noida",
     "Submitted to Vendor",
     "Sample vendor service row"
   ]
@@ -371,6 +378,7 @@ const emptyInventoryForm = {
   ram: "",
   disk: "",
   location: "",
+  branch: "Pune",
   status: "In Use",
   notes: ""
 };
@@ -379,6 +387,7 @@ const emptyTicketForm = {
   title: "",
   description: "",
   category: "Password",
+  branch: "Pune",
   priority: "Medium",
   status: "Open",
   due_date: "",
@@ -402,6 +411,7 @@ const emptyExpenseForm = {
   employee_name: "",
   employee_email: "",
   department: "Operations",
+  branch: "Pune",
   category: "Travel",
   vendor_merchant: "",
   amount: "",
@@ -419,6 +429,7 @@ const emptyTravelForm = {
   employee_name: "",
   employee_email: "",
   department: "Admin",
+  branch: "Pune",
   destination_from: "",
   destination_to: "",
   travel_start_date: "",
@@ -464,6 +475,7 @@ const emptyVendorForm = {
   email: "",
   contact_details: "",
   office_address: "",
+  branch: "Pune",
   service_provided: "",
   start_date: "",
   end_date: "",
@@ -634,6 +646,7 @@ function inventoryMatchesLocalSearch(item, query) {
     item.ram,
     item.disk,
     item.location,
+    item.branch,
     item.status,
     item.notes,
     item.assigned_to,
@@ -649,6 +662,7 @@ function travelMatchesLocalSearch(item, query) {
     item.employee_name,
     item.employee_email,
     item.department,
+    item.branch,
     item.destination_from,
     item.destination_to,
     item.purpose,
@@ -880,6 +894,7 @@ function inventoryPayloadFromForm(form) {
     unit: "unit",
     condition: "Good",
     location: String(form.location || "").trim(),
+    branch: form.branch || "Pune",
     assigned_to: employeeName,
     department: "",
     purchase_date: null,
@@ -5006,6 +5021,7 @@ function expenseMatchesLocalSearch(expense, query) {
     expense.employee_name,
     expense.employee_email,
     expense.department,
+    expense.branch,
     expense.category,
     expense.vendor_merchant,
     expense.payment_mode,
@@ -5037,6 +5053,7 @@ function ticketMatchesLocalSearch(ticket, query) {
     ticket.requester_name,
     ticket.requester_email,
     ticket.category,
+    ticket.branch,
     ticket.assigned_role,
     ticket.assigned_team
   ].join(" ").toLowerCase().includes(normalized);
@@ -5049,7 +5066,7 @@ function ticketBadgeClass(base, value) {
 function TicketsView({ currentUser, onTicketSaved, onUpdated, setError, tickets }) {
   const [ticketSearch, setTicketSearch] = useState("");
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [ticketFilters, setTicketFilters] = useState({ type: "All", status: "All", priority: "All" });
+  const [ticketFilters, setTicketFilters] = useState({ type: "All", status: "All", priority: "All", branch: "All" });
   const [ticketPage, setTicketPage] = useState(1);
   const [toastMessage, setToastMessage] = useState("");
   const [toastType, setToastType] = useState("success");
@@ -5069,7 +5086,8 @@ function TicketsView({ currentUser, onTicketSaved, onUpdated, setError, tickets 
       const matchesType = ticketFilters.type === "All" || ticket.ticket_type === ticketFilters.type;
       const matchesStatus = ticketFilters.status === "All" || ticket.status === ticketFilters.status;
       const matchesPriority = ticketFilters.priority === "All" || ticket.priority === ticketFilters.priority;
-      return matchesQuery && matchesType && matchesStatus && matchesPriority;
+      const matchesBranch = ticketFilters.branch === "All" || (ticket.branch || "Pune") === ticketFilters.branch;
+      return matchesQuery && matchesType && matchesStatus && matchesPriority && matchesBranch;
     });
   }, [ticketFilters, ticketSearch, tickets]);
   const ticketPageCount = Math.max(1, Math.ceil(filteredTickets.length / TICKET_PAGE_SIZE));
@@ -5107,7 +5125,7 @@ function TicketsView({ currentUser, onTicketSaved, onUpdated, setError, tickets 
   }
 
   function clearTicketFilters() {
-    setTicketFilters({ type: "All", status: "All", priority: "All" });
+    setTicketFilters({ type: "All", status: "All", priority: "All", branch: "All" });
   }
 
   function updateTicketField(field, value) {
@@ -5157,6 +5175,7 @@ function TicketsView({ currentUser, onTicketSaved, onUpdated, setError, tickets 
       title: ticket.title || "",
       description: ticket.description || "",
       category: ticket.category || ticketCategoryOptions[ticket.ticket_type]?.[0] || "Other",
+      branch: ticket.branch || "Pune",
       priority: ticket.priority || "Medium",
       status: ticket.status || "Open",
       due_date: String(ticket.due_date || "").slice(0, 10),
@@ -5328,6 +5347,12 @@ function TicketsView({ currentUser, onTicketSaved, onUpdated, setError, tickets 
                       {ticketPriorityFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
                     </select>
                   </label>
+                  <label>
+                    Branch
+                    <select value={ticketFilters.branch} onChange={(event) => updateTicketFilter("branch", event.target.value)}>
+                      {branchFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+                    </select>
+                  </label>
                   <button className="table-action-button" onClick={clearTicketFilters} type="button">Clear</button>
                 </div>
               )}
@@ -5448,6 +5473,12 @@ function TicketsView({ currentUser, onTicketSaved, onUpdated, setError, tickets 
                 </select>
                 {formErrors.category && <span>{formErrors.category}</span>}
               </label>
+              <label className="vendor-field">
+                Branch
+                <select onChange={(event) => updateTicketField("branch", event.target.value)} value={form.branch || "Pune"}>
+                  {branchOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+                </select>
+              </label>
               <VendorField
                 error={formErrors.title}
                 label="Title"
@@ -5542,6 +5573,7 @@ function TicketTable({
             <th>Title</th>
             <th>Type</th>
             <th>Category</th>
+            <th>Branch</th>
             <th>Priority</th>
             <th>Status</th>
             <th>Requested by</th>
@@ -5565,6 +5597,7 @@ function TicketTable({
                 </td>
                 <td>{ticket.ticket_type}</td>
                 <td>{ticket.category}</td>
+                <td>{ticket.branch || "Pune"}</td>
                 <td>{ticket.priority}</td>
                 <td>{ticket.status}</td>
                 <td className="ticket-person-cell">
@@ -5859,11 +5892,13 @@ function VendorsView({ currentUser, onChanged, setError, vendors }) {
   const [vendorFilters, setVendorFilters] = useState({
     status: "All",
     service: "All",
+    branch: "All",
     billingCycle: "All"
   });
   const [vendorFilterDraft, setVendorFilterDraft] = useState({
     status: "All",
     service: "All",
+    branch: "All",
     billingCycle: "All"
   });
   const [saving, setSaving] = useState(false);
@@ -5875,6 +5910,7 @@ function VendorsView({ currentUser, onChanged, setError, vendors }) {
         vendor.contact_person,
         vendor.email,
         vendor.contact_details,
+        vendor.branch,
         vendor.service_provided
       ].join(" ").toLowerCase();
       const matchesQuery = !query || searchText.includes(query);
@@ -5884,10 +5920,11 @@ function VendorsView({ currentUser, onChanged, setError, vendors }) {
       const matchesService =
         vendorFilters.service === "All" ||
         vendor.service_provided === vendorFilters.service;
+      const matchesBranch = vendorFilters.branch === "All" || (vendor.branch || "Pune") === vendorFilters.branch;
       const matchesBillingCycle =
         vendorFilters.billingCycle === "All" ||
         normalizeBillingCycle(vendor.billing_cycle) === vendorFilters.billingCycle;
-      return matchesQuery && matchesStatus && matchesService && matchesBillingCycle;
+      return matchesQuery && matchesStatus && matchesService && matchesBranch && matchesBillingCycle;
     });
   }, [vendorFilters, vendorSearch, vendors]);
   const vendorPageCount = Math.max(1, Math.ceil(filteredVendors.length / VENDOR_PAGE_SIZE));
@@ -5953,7 +5990,7 @@ function VendorsView({ currentUser, onChanged, setError, vendors }) {
   }
 
   function clearVendorFilters() {
-    const clearedFilters = { status: "All", service: "All", billingCycle: "All" };
+    const clearedFilters = { status: "All", service: "All", branch: "All", billingCycle: "All" };
     setVendorFilterDraft(clearedFilters);
     setVendorFilters(clearedFilters);
     setFiltersOpen(false);
@@ -6042,6 +6079,7 @@ function VendorsView({ currentUser, onChanged, setError, vendors }) {
       email: vendor.email || "",
       contact_details: vendor.contact_details || "",
       office_address: vendor.office_address || "",
+      branch: vendor.branch || "Pune",
       service_provided: vendor.service_provided || "",
       start_date: vendor.start_date || "",
       end_date: vendor.end_date || "",
@@ -6245,6 +6283,12 @@ function VendorsView({ currentUser, onChanged, setError, vendors }) {
                   </select>
                 </label>
                 <label>
+                  Branch
+                  <select value={vendorFilterDraft.branch} onChange={(event) => updateVendorFilterDraft("branch", event.target.value)}>
+                    {branchFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+                  </select>
+                </label>
+                <label>
                   Billing cycle
                   <select value={vendorFilterDraft.billingCycle} onChange={(event) => updateVendorFilterDraft("billingCycle", event.target.value)}>
                     {vendorBillingCycleFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
@@ -6389,6 +6433,12 @@ function VendorsView({ currentUser, onChanged, setError, vendors }) {
                 {formErrors.office_address && <span>{formErrors.office_address}</span>}
               </label>
               <label className="vendor-field">
+                Branch
+                <select onChange={(event) => updateField("branch", event.target.value)} value={form.branch}>
+                  {branchOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+                </select>
+              </label>
+              <label className="vendor-field">
                 Service provided
                 <select
                   onChange={(event) => updateField("service_provided", event.target.value)}
@@ -6506,6 +6556,7 @@ function VendorTable({
               <th>Email</th>
               <th>Phone</th>
               <th>Service</th>
+              <th>Branch</th>
               <th>Start</th>
               <th>End</th>
               <th>Billing</th>
@@ -6521,6 +6572,7 @@ function VendorTable({
                 <td>{vendor.email}</td>
                 <td>{vendor.contact_details}</td>
                 <td>{vendor.service_provided}</td>
+                <td>{vendor.branch || "Pune"}</td>
                 <td>{formatDateOnly(vendor.start_date)}</td>
                 <td>{formatDateOnly(vendor.end_date)}</td>
                 <td>{formatVendorBilling(vendor)}</td>
@@ -6684,7 +6736,8 @@ function InventoryView({ currentUser, inventoryImports, inventoryItems, onChange
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [inventoryFilters, setInventoryFilters] = useState({
     status: "All",
-    location: "All"
+    location: "All",
+    branch: "All"
   });
   const [inventoryPage, setInventoryPage] = useState(1);
   const [toastMessage, setToastMessage] = useState("");
@@ -6716,7 +6769,8 @@ function InventoryView({ currentUser, inventoryImports, inventoryItems, onChange
       const matchesQuery = inventoryMatchesLocalSearch(item, inventorySearch);
       const matchesStatus = inventoryFilters.status === "All" || normalizeInventoryStatus(item.status) === inventoryFilters.status;
       const matchesLocation = inventoryFilters.location === "All" || item.location === inventoryFilters.location;
-      return matchesQuery && matchesStatus && matchesLocation;
+      const matchesBranch = inventoryFilters.branch === "All" || (item.branch || "Pune") === inventoryFilters.branch;
+      return matchesQuery && matchesStatus && matchesLocation && matchesBranch;
     });
   }, [inventoryFilters, inventoryItems, inventorySearch]);
   const inventoryPageCount = Math.max(1, Math.ceil(filteredInventory.length / INVENTORY_PAGE_SIZE));
@@ -6748,14 +6802,15 @@ function InventoryView({ currentUser, inventoryImports, inventoryItems, onChange
     const summarySource = inventoryItems.filter((item) => {
       const matchesQuery = inventoryMatchesLocalSearch(item, inventorySearch);
       const matchesLocation = inventoryFilters.location === "All" || item.location === inventoryFilters.location;
-      return matchesQuery && matchesLocation;
+      const matchesBranch = inventoryFilters.branch === "All" || (item.branch || "Pune") === inventoryFilters.branch;
+      return matchesQuery && matchesLocation && matchesBranch;
     });
 
     return inventoryQuickStatusOptions.map((status) => ({
       status,
       count: summarySource.filter((item) => normalizeInventoryStatus(item.status) === status).length
     }));
-  }, [inventoryFilters.location, inventoryItems, inventorySearch]);
+  }, [inventoryFilters.branch, inventoryFilters.location, inventoryItems, inventorySearch]);
 
   useEffect(() => {
     setInventoryPage(1);
@@ -6786,7 +6841,8 @@ function InventoryView({ currentUser, inventoryImports, inventoryItems, onChange
   function clearInventoryFilters() {
     setInventoryFilters({
       status: "All",
-      location: "All"
+      location: "All",
+      branch: "All"
     });
   }
 
@@ -6841,6 +6897,7 @@ function InventoryView({ currentUser, inventoryImports, inventoryItems, onChange
       ram: item.ram || "",
       disk: item.disk || "",
       location: item.location || "",
+      branch: item.branch || "Pune",
       status: inventoryStatusOptions.includes(normalizeInventoryStatus(item.status)) ? normalizeInventoryStatus(item.status) : "In Use",
       notes: item.notes || ""
     });
@@ -7228,6 +7285,12 @@ function InventoryView({ currentUser, inventoryImports, inventoryItems, onChange
                     {locationOptions.map((option) => <option key={option} value={option}>{option}</option>)}
                   </select>
                 </label>
+                <label>
+                  Branch
+                  <select value={inventoryFilters.branch} onChange={(event) => updateInventoryFilter("branch", event.target.value)}>
+                    {branchFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+                  </select>
+                </label>
                 <button className="table-action-button" onClick={clearInventoryFilters} type="button">Clear</button>
               </div>
             )}
@@ -7511,6 +7574,7 @@ function InventoryView({ currentUser, inventoryImports, inventoryItems, onChange
                         <th>RAM</th>
                         <th>Disk</th>
                         <th>Location</th>
+                        <th>Branch</th>
                         <th>Status</th>
                         <th>Notes</th>
                         <th>Validation</th>
@@ -7525,6 +7589,7 @@ function InventoryView({ currentUser, inventoryImports, inventoryItems, onChange
                           <td>{row.item.ram || "—"}</td>
                           <td>{row.item.disk || "—"}</td>
                           <td>{row.item.location || "—"}</td>
+                          <td>{row.item.branch || "Pune"}</td>
                           <td>{row.item.status || "In Use"}</td>
                           <td className="inventory-notes-cell">{row.item.notes || "—"}</td>
                           <td>
@@ -7561,6 +7626,13 @@ function InventoryFormFields({ form, formErrors, onChange }) {
       <VendorField error={formErrors.ram} label="RAM" onChange={(value) => onChange("ram", value)} value={form.ram} />
       <VendorField error={formErrors.disk} label="Disk" onChange={(value) => onChange("disk", value)} value={form.disk} />
       <VendorField error={formErrors.location} label="Location" onChange={(value) => onChange("location", value)} value={form.location} />
+      <label className="vendor-field">
+        Branch
+        <select value={form.branch || "Pune"} onChange={(event) => onChange("branch", event.target.value)}>
+          {branchOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+        </select>
+        {formErrors.branch && <span>{formErrors.branch}</span>}
+      </label>
       <label className="vendor-field">
         Status
         <select value={form.status} onChange={(event) => onChange("status", event.target.value)}>
@@ -7651,6 +7723,7 @@ function InventoryImportedItemsTable({ items }) {
             <th>RAM</th>
             <th>Disk</th>
             <th>Location</th>
+            <th>Branch</th>
             <th>Status</th>
             <th>Notes</th>
           </tr>
@@ -7664,6 +7737,7 @@ function InventoryImportedItemsTable({ items }) {
               <td>{item.ram || "—"}</td>
               <td>{item.disk || "—"}</td>
               <td>{item.location}</td>
+              <td>{item.branch || "Pune"}</td>
               <td>{item.status}</td>
               <td className="inventory-notes-cell">{item.notes || "—"}</td>
             </tr>
@@ -7734,6 +7808,7 @@ function InventoryTable({
               <th>RAM</th>
               <th>Disk</th>
               <th>Location</th>
+              <th>Branch</th>
               <th>Status</th>
               <th>Notes</th>
               <th>Actions</th>
@@ -7757,6 +7832,7 @@ function InventoryTable({
                 <td>{item.ram || "—"}</td>
                 <td>{item.disk || "—"}</td>
                 <td>{item.location}</td>
+                <td>{item.branch || "Pune"}</td>
                 <td><span className="inventory-status-text">{item.status}</span></td>
                 <td className="inventory-notes-cell">{item.notes || "—"}</td>
                 <td>
@@ -7869,6 +7945,7 @@ function TravelCalendarView({
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [filters, setFilters] = useState({
     department: "All",
+    branch: "All",
     approvalStatus: "All",
     policyStatus: "All",
     travelMode: "All",
@@ -7892,13 +7969,14 @@ function TravelCalendarView({
     return travelRecords.filter((record) => {
       const matchesQuery = travelMatchesLocalSearch(record, travelSearch);
       const matchesDepartment = filters.department === "All" || record.department === filters.department;
+      const matchesBranch = filters.branch === "All" || (record.branch || "Pune") === filters.branch;
       const matchesApproval = filters.approvalStatus === "All" || record.approval_status === filters.approvalStatus;
       const matchesPolicy = filters.policyStatus === "All" || record.policy_status === filters.policyStatus;
       const matchesMode = filters.travelMode === "All" || record.travel_mode === filters.travelMode;
       const start = String(record.travel_start_date || "").slice(0, 10);
       const matchesStart = !filters.startDate || start >= filters.startDate;
       const matchesEnd = !filters.endDate || start <= filters.endDate;
-      return matchesQuery && matchesDepartment && matchesApproval && matchesPolicy && matchesMode && matchesStart && matchesEnd;
+      return matchesQuery && matchesDepartment && matchesBranch && matchesApproval && matchesPolicy && matchesMode && matchesStart && matchesEnd;
     });
   }, [filters, travelRecords, travelSearch]);
 
@@ -7913,13 +7991,16 @@ function TravelCalendarView({
       const relatedTravel = travelByTravelId.get(event.related_travel_id) || {};
       const matchesQuery = travelMatchesLocalSearch({ ...relatedTravel, ...event }, travelSearch);
       const matchesDepartment = filters.department === "All" || relatedTravel.department === filters.department;
+      const matchesBranch = filters.branch === "All"
+        || (relatedTravel.branch || "Pune") === filters.branch
+        || String(event.location || "").toLowerCase().includes(filters.branch.toLowerCase());
       const matchesApproval = filters.approvalStatus === "All" || relatedTravel.approval_status === filters.approvalStatus;
       const matchesPolicy = filters.policyStatus === "All" || relatedTravel.policy_status === filters.policyStatus;
       const matchesMode = filters.travelMode === "All" || relatedTravel.travel_mode === filters.travelMode;
       const start = String(event.start_datetime || "").slice(0, 10);
       const matchesStart = !filters.startDate || start >= filters.startDate;
       const matchesEnd = !filters.endDate || start <= filters.endDate;
-      return matchesQuery && matchesDepartment && matchesApproval && matchesPolicy && matchesMode && matchesStart && matchesEnd;
+      return matchesQuery && matchesDepartment && matchesBranch && matchesApproval && matchesPolicy && matchesMode && matchesStart && matchesEnd;
     });
   }, [calendarEvents, filters, travelByTravelId, travelSearch]);
 
@@ -7946,6 +8027,7 @@ function TravelCalendarView({
   function clearFilters() {
     setFilters({
       department: "All",
+      branch: "All",
       approvalStatus: "All",
       policyStatus: "All",
       travelMode: "All",
@@ -7974,6 +8056,7 @@ function TravelCalendarView({
       employee_name: record.employee_name || "",
       employee_email: record.employee_email || "",
       department: record.department || "Admin",
+      branch: record.branch || "Pune",
       destination_from: record.destination_from || "",
       destination_to: record.destination_to || "",
       travel_start_date: String(record.travel_start_date || "").slice(0, 10),
@@ -8206,6 +8289,12 @@ function TravelCalendarView({
                   </select>
                 </label>
                 <label>
+                  Branch
+                  <select value={filters.branch} onChange={(event) => updateFilter("branch", event.target.value)}>
+                    {branchFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+                  </select>
+                </label>
+                <label>
                   Travel status
                   <select value={filters.approvalStatus} onChange={(event) => updateFilter("approvalStatus", event.target.value)}>
                     {travelStatusFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
@@ -8302,6 +8391,12 @@ function TravelCalendarView({
               <VendorField error={formErrors.employee_name} label="Employee name" onChange={(value) => updateTravelField("employee_name", value)} value={travelForm.employee_name} />
               <VendorField error={formErrors.employee_email} label="Employee email" onChange={(value) => updateTravelField("employee_email", value)} type="email" value={travelForm.employee_email} />
               <VendorField error={formErrors.department} label="Department" onChange={(value) => updateTravelField("department", value)} value={travelForm.department} />
+              <label className="vendor-field">
+                Branch
+                <select onChange={(event) => updateTravelField("branch", event.target.value)} value={travelForm.branch || "Pune"}>
+                  {branchOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+                </select>
+              </label>
               <VendorField error={formErrors.destination_from} label="Destination from" onChange={(value) => updateTravelField("destination_from", value)} value={travelForm.destination_from} />
               <VendorField error={formErrors.destination_to} label="Destination to" onChange={(value) => updateTravelField("destination_to", value)} value={travelForm.destination_to} />
               <VendorField error={formErrors.travel_start_date} helper={travelForm.travel_start_date ? `Selected: ${formatDateOnly(travelForm.travel_start_date)}` : "Choose start date"} label="Travel start date" onChange={(value) => updateTravelField("travel_start_date", value)} type="date" value={travelForm.travel_start_date} />
@@ -8411,6 +8506,7 @@ function TravelRecordsTable({ from, onEdit, onPageChange, page, pageCount, recor
             <th>Travel ID</th>
             <th>Employee</th>
             <th>Department</th>
+            <th>Branch</th>
             <th>From</th>
             <th>To</th>
             <th>Dates</th>
@@ -8432,6 +8528,7 @@ function TravelRecordsTable({ from, onEdit, onPageChange, page, pageCount, recor
               <td><strong>{record.travel_id}</strong></td>
               <td className="ticket-person-cell"><strong>{record.employee_name}</strong><span>{record.employee_email}</span></td>
               <td>{record.department}</td>
+              <td>{record.branch || "Pune"}</td>
               <td>{record.destination_from}</td>
               <td>{record.destination_to}</td>
               <td>{formatDateOnly(record.travel_start_date)} - {formatDateOnly(record.travel_end_date)}</td>
@@ -8587,7 +8684,7 @@ function TravelReportCard({ columns, rows, title }) {
 function ExpenseView({ currentUser, expenses, onChanged, onExpenseSaved, setError }) {
   const [expenseSearch, setExpenseSearch] = useState("");
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [expenseFilters, setExpenseFilters] = useState({ category: "All", status: "All", department: "All" });
+  const [expenseFilters, setExpenseFilters] = useState({ category: "All", status: "All", department: "All", branch: "All" });
   const [expensePage, setExpensePage] = useState(1);
   const [toastMessage, setToastMessage] = useState("");
   const [toastType, setToastType] = useState("success");
@@ -8612,7 +8709,8 @@ function ExpenseView({ currentUser, expenses, onChanged, onExpenseSaved, setErro
       const matchesCategory = expenseFilters.category === "All" || expense.category === expenseFilters.category;
       const matchesStatus = expenseFilters.status === "All" || expense.status === expenseFilters.status;
       const matchesDepartment = expenseFilters.department === "All" || expense.department === expenseFilters.department;
-      return matchesQuery && matchesCategory && matchesStatus && matchesDepartment;
+      const matchesBranch = expenseFilters.branch === "All" || (expense.branch || "Pune") === expenseFilters.branch;
+      return matchesQuery && matchesCategory && matchesStatus && matchesDepartment && matchesBranch;
     });
   }, [expenseFilters, expenseSearch, expenses]);
   const expensePageCount = Math.max(1, Math.ceil(filteredExpenses.length / EXPENSE_PAGE_SIZE));
@@ -8649,7 +8747,7 @@ function ExpenseView({ currentUser, expenses, onChanged, onExpenseSaved, setErro
   }
 
   function clearExpenseFilters() {
-    setExpenseFilters({ category: "All", status: "All", department: "All" });
+    setExpenseFilters({ category: "All", status: "All", department: "All", branch: "All" });
   }
 
   function updateExpenseField(field, value) {
@@ -8667,6 +8765,7 @@ function ExpenseView({ currentUser, expenses, onChanged, onExpenseSaved, setErro
       employee_name: expense.employee_name || "",
       employee_email: expense.employee_email || "",
       department: expense.department || "Operations",
+      branch: expense.branch || "Pune",
       category: expense.category || "Travel",
       vendor_merchant: expense.vendor_merchant || "",
       amount: String(expense.amount || ""),
@@ -8939,6 +9038,12 @@ function ExpenseView({ currentUser, expenses, onChanged, onExpenseSaved, setErro
                       {expenseDepartmentFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
                     </select>
                   </label>
+                  <label>
+                    Branch
+                    <select value={expenseFilters.branch} onChange={(event) => updateExpenseFilter("branch", event.target.value)}>
+                      {branchFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+                    </select>
+                  </label>
                   <button className="table-action-button" onClick={clearExpenseFilters} type="button">Clear</button>
                 </div>
               )}
@@ -9084,6 +9189,12 @@ function ExpenseView({ currentUser, expenses, onChanged, onExpenseSaved, setErro
                 {formErrors.department && <span>{formErrors.department}</span>}
               </label>
               <label className="vendor-field">
+                Branch
+                <select onChange={(event) => updateExpenseField("branch", event.target.value)} value={form.branch || "Pune"}>
+                  {branchOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+                </select>
+              </label>
+              <label className="vendor-field">
                 Category
                 <select onChange={(event) => updateExpenseField("category", event.target.value)} value={form.category}>
                   {expenseCategoryOptions.map((option) => <option key={option} value={option}>{option}</option>)}
@@ -9179,6 +9290,7 @@ function ExpenseTable({
             <th>Expense ID</th>
             <th>Employee</th>
             <th>Department</th>
+            <th>Branch</th>
             <th>Category</th>
             <th>Vendor/Merchant</th>
             <th>Amount</th>
@@ -9204,6 +9316,7 @@ function ExpenseTable({
                   <span>{expense.employee_email}</span>
                 </td>
                 <td>{expense.department}</td>
+                <td>{expense.branch || "Pune"}</td>
                 <td>{expense.category}</td>
                 <td>{expense.vendor_merchant}</td>
                 <td><strong>{formatMoney(expense.amount, expense.currency)}</strong></td>

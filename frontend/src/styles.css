@@ -3067,6 +3067,20 @@ button:focus-visible {
   min-width: 290px;
 }
 
+.task-action-row .vendor-filter-panel,
+.ticket-action-row .vendor-filter-panel {
+  left: auto;
+  right: 0;
+  width: min(360px, calc(100vw - 32px));
+  max-width: min(360px, calc(100vw - 32px));
+  z-index: 90;
+}
+
+.ticket-action-row .vendor-filter-panel {
+  width: min(320px, calc(100vw - 32px));
+  max-width: min(320px, calc(100vw - 32px));
+}
+
 .task-description-cell {
   max-width: 320px;
   color: #53617c;
@@ -6294,7 +6308,17 @@ button:focus-visible {
   .vendor-filter-panel {
     position: static;
     width: 100%;
+    max-width: 100%;
     margin-top: 8px;
+  }
+
+  .task-action-row .vendor-filter-panel,
+  .ticket-action-row .vendor-filter-panel {
+    position: static;
+    right: auto;
+    left: auto;
+    width: 100%;
+    max-width: 100%;
   }
 
   .vendors-page .vendor-filter-panel::before {
