@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import KpiCard from "./components/KpiCard.jsx";
+import InsightCard from "./components/InsightCard.jsx";
+import CustomSelect from "./components/ui/CustomSelect.jsx";
 import {
   AlertCircle,
   BarChart3,
@@ -158,7 +161,7 @@ const DEFAULT_COMMAND =
 
 const DEFAULT_ROUTE_REQUEST = "I need approval for an invoice mismatch of ₹12,500";
 
-const DASHBOARD_CHART_COLORS = ["#4f46e5", "#0ea5e9", "#22c55e", "#f97316", "#ec4899", "#8b5cf6"];
+const DASHBOARD_CHART_COLORS = ["#EF4444", "#525252", "#737373", "#404040", "#DC2626", "#888888"];
 
 const DASHBOARD_SUMMARY_ICONS = {
   total_tickets: ShieldAlert,
@@ -976,6 +979,61 @@ function savedTheme() {
   return "dark";
 }
 
+function SearchBar({ value, onChange, onClear, isDark = true }) {
+  const [focused, setFocused] = useState(false);
+  return (
+    <div style={{
+      display: "flex",
+      alignItems: "center",
+      gap: "8px",
+      background: focused ? (isDark ? "#111111" : "#F4F4F5") : (isDark ? "#111111" : "#F4F4F5"),
+      border: focused
+        ? "1px solid rgba(239,68,68,0.75)"
+        : `1px solid rgba(239,68,68,${isDark ? 0.35 : 0.4})`,
+      borderRadius: "999px",
+      padding: "0 16px",
+      width: "100%",
+      maxWidth: "650px",
+      height: "42px",
+      boxSizing: "border-box",
+      boxShadow: focused
+        ? "0 0 18px rgba(239,68,68,0.25)"
+        : `0 0 12px rgba(239,68,68,${isDark ? 0.15 : 0.1})`,
+      transition: "all 0.2s ease",
+    }}>
+      <Search size={15} color="#71717A" />
+      <input
+        value={value}
+        onChange={onChange}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        placeholder="Search anything..."
+        style={{
+          background: "transparent",
+          border: "none",
+          outline: "none",
+          color: isDark ? "#FFFFFF" : "#0A0A0A",
+          fontSize: "14px",
+          fontWeight: 400,
+          width: "100%",
+          fontFamily: "Inter, system-ui, sans-serif",
+        }}
+      />
+      {value && (
+        <button
+          onClick={onClear}
+          type="button"
+          title="Clear search"
+          aria-label="Clear search"
+          style={{ background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex", alignItems: "center", color: "#71717A" }}
+        >
+          <X size={14} />
+        </button>
+      )}
+    </div>
+  );
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState(() => tabFromPath() || "dashboard");
   const [command, setCommand] = useState(DEFAULT_COMMAND);
@@ -1299,7 +1357,9 @@ function App() {
   }
 
   function toggleTheme() {
+    document.documentElement.classList.add("theme-transitioning");
     setTheme((current) => (current === "dark" ? "light" : "dark"));
+    setTimeout(() => document.documentElement.classList.remove("theme-transitioning"), 350);
   }
 
   useEffect(() => {
@@ -1473,38 +1533,87 @@ function App() {
             </div>
           </div>
           <form className="utility-search-form" onSubmit={handleSearchSubmit} role="search">
-            <div className="search-box">
-              <Search size={20} />
-              <input
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search anything..."
-              />
-              {search ? (
-                <button className="search-clear" onClick={clearSearch} type="button" title="Clear search" aria-label="Clear search">
-                  <X size={16} />
-                </button>
-              ) : (
-                <span className="key-hint">⌘ K</span>
-              )}
-            </div>
+            <SearchBar
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              onClear={clearSearch}
+              isDark={theme === "dark"}
+            />
           </form>
           <div className="topbar-actions">
             <div className="notification-wrap">
-              <button
+              <div
                 aria-expanded={notificationsOpen}
                 aria-label="Open notifications"
-                className="notification-button"
+                role="button"
+                tabIndex={0}
+                className="notification-btn"
                 onClick={() => {
                   setNotificationsOpen((open) => !open);
                   setAccountOpen(false);
                 }}
-                type="button"
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { setNotificationsOpen((open) => !open); setAccountOpen(false); }}}
                 title="Notifications"
+                style={{
+                  position: "relative",
+                  width: "38px",
+                  height: "38px",
+                  background: theme === "dark" ? "#141414" : "#F4F4F5",
+                  border: `1px solid rgba(239,68,68,${theme === "dark" ? 0.35 : 0.4})`,
+                  borderRadius: "10px",
+                  boxShadow: `0 0 ${theme === "dark" ? "16px rgba(239,68,68,0.2)" : "12px rgba(239,68,68,0.12)"}, inset 0 1px 0 rgba(255,255,255,0.05)`,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  cursor: "pointer",
+                  transition: "all 0.2s ease",
+                  flexShrink: 0,
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.boxShadow = `0 0 ${theme === "dark" ? "24px rgba(239,68,68,0.35)" : "20px rgba(239,68,68,0.25)"}, inset 0 1px 0 rgba(255,255,255,0.05)`;
+                  e.currentTarget.style.border = "1px solid rgba(239,68,68,0.7)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.boxShadow = `0 0 ${theme === "dark" ? "16px rgba(239,68,68,0.2)" : "12px rgba(239,68,68,0.12)"}, inset 0 1px 0 rgba(255,255,255,0.05)`;
+                  e.currentTarget.style.border = `1px solid rgba(239,68,68,${theme === "dark" ? 0.35 : 0.4})`;
+                }}
               >
-                <Bell size={19} />
-                {notificationBadgeCount > 0 && <span>{notificationBadgeCount}</span>}
-              </button>
+                <Bell size={18} color={theme === "dark" ? "#FFFFFF" : "#0A0A0A"} strokeWidth={1.5} className="bell-icon" />
+                {notificationBadgeCount > 0 && (
+                  notificationBadgeCount > 9 ? (
+                    <div style={{
+                      position: "absolute",
+                      top: "-4px",
+                      right: "-4px",
+                      minWidth: "16px",
+                      height: "16px",
+                      background: "#EF4444",
+                      borderRadius: "999px",
+                      fontSize: "9px",
+                      color: "#fff",
+                      fontWeight: 700,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      padding: "0 4px",
+                      boxSizing: "border-box",
+                    }}>
+                      {notificationBadgeCount}
+                    </div>
+                  ) : (
+                    <div className="notification-dot" style={{
+                      position: "absolute",
+                      top: "7px",
+                      right: "7px",
+                      width: "8px",
+                      height: "8px",
+                      background: "#EF4444",
+                      borderRadius: "50%",
+                      border: "1.5px solid #0A0A0A",
+                    }} />
+                  )
+                )}
+              </div>
               {notificationsOpen && (
                 <div className="notification-panel" role="dialog" aria-label="Notifications">
                   <div className="notification-header">
@@ -1542,16 +1651,90 @@ function App() {
                 </div>
               )}
             </div>
-            <button
+            <div
               aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
               className="theme-toggle"
-              onClick={toggleTheme}
               title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-              type="button"
+              role="group"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                background: theme === "dark" ? "#1A1A1A" : "#E4E4E7",
+                border: `1px solid ${theme === "dark" ? "#2A2A2A" : "#D4D4D8"}`,
+                borderRadius: "999px",
+                padding: "3px",
+                gap: "2px",
+                cursor: "pointer",
+                position: "relative",
+              }}
             >
-              <span className={theme === "light" ? "active" : ""}><Sun size={17} /></span>
-              <span className={theme === "dark" ? "active" : ""}><Moon size={17} /></span>
-            </button>
+              <div
+                className="toggle-slider"
+                style={{
+                  position: "absolute",
+                  width: "28px",
+                  height: "28px",
+                  background: theme === "dark" ? "#2A2A2A" : "#FFFFFF",
+                  borderRadius: "50%",
+                  transition: "transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s ease",
+                  transform: theme === "dark" ? "translateX(30px)" : "translateX(0px)",
+                  border: "1px solid rgba(239,68,68,0.3)",
+                  boxShadow: theme === "dark" ? "0 0 8px rgba(239,68,68,0.15)" : "0 1px 4px rgba(0,0,0,0.15)",
+                }}
+              />
+              <div
+                onClick={() => theme !== "light" && toggleTheme()}
+                aria-label="Switch to light mode"
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => { if ((e.key === "Enter" || e.key === " ") && theme !== "light") toggleTheme(); }}
+                style={{
+                  width: "28px",
+                  height: "28px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  borderRadius: "50%",
+                  position: "relative",
+                  zIndex: 1,
+                  cursor: "pointer",
+                }}
+              >
+                <Sun
+                  size={14}
+                  color={theme === "light" ? "#EF4444" : "#71717A"}
+                  strokeWidth={1.8}
+                  className={theme === "light" ? "sun-active" : ""}
+                  style={{ transition: "color 0.3s ease" }}
+                />
+              </div>
+              <div
+                onClick={() => theme !== "dark" && toggleTheme()}
+                aria-label="Switch to dark mode"
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => { if ((e.key === "Enter" || e.key === " ") && theme !== "dark") toggleTheme(); }}
+                style={{
+                  width: "28px",
+                  height: "28px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  borderRadius: "50%",
+                  position: "relative",
+                  zIndex: 1,
+                  cursor: "pointer",
+                }}
+              >
+                <Moon
+                  size={14}
+                  color={theme === "dark" ? "#EF4444" : "#71717A"}
+                  strokeWidth={1.8}
+                  className={theme === "dark" ? "moon-active" : ""}
+                  style={{ transition: "color 0.3s ease" }}
+                />
+              </div>
+            </div>
             <div className="utility-divider" aria-hidden="true" />
             <div className="account-wrap" ref={accountMenuRef}>
               <button
@@ -2012,41 +2195,62 @@ function OperationsDashboard({
             <div>
               <h2>{dashboard.title || `${roleLabel(role)} Command Center`}</h2>
             </div>
-            {assistantClosed && (
-              <button className="icon-button secondary dashboard-ai-open-inline" onClick={() => setAssistantClosed(false)} type="button">
-                <Sparkles size={16} />
-                <span>Conci AI</span>
-              </button>
-            )}
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+              {role !== "finance_manager" && (
+                <DashboardQuickActions actions={dashboard.quick_actions || []} currentUser={currentUser} onNavigate={onNavigate} />
+              )}
+              {assistantClosed && (
+                <button className="icon-button secondary dashboard-ai-open-inline" onClick={() => setAssistantClosed(false)} type="button">
+                  <Sparkles size={16} />
+                  <span>Conci AI</span>
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="ops-summary-row dashboard-summary-row">
             {(dashboard.summary_cards || []).map((card) => (
-              <Metric
-                icon={DASHBOARD_SUMMARY_ICONS[card.id] || BarChart3}
-                key={card.id}
-                label={card.label}
-                value={card.value_kind === "currency" ? formatMoney(card.value) : card.value}
-              />
+              role === "admin" ? (
+                <KpiCard
+                  key={card.id}
+                  icon={DASHBOARD_SUMMARY_ICONS[card.id] || BarChart3}
+                  label={card.label}
+                  value={card.value_kind === "currency" ? formatMoney(card.value) : card.value}
+                  trend={card.trend_percent ?? null}
+                />
+              ) : (
+                <Metric
+                  icon={DASHBOARD_SUMMARY_ICONS[card.id] || BarChart3}
+                  key={card.id}
+                  label={card.label}
+                  value={card.value_kind === "currency" ? formatMoney(card.value) : card.value}
+                />
+              )
             ))}
           </div>
 
-          {role !== "finance_manager" && (
-            <DashboardQuickActions actions={dashboard.quick_actions || []} currentUser={currentUser} onNavigate={onNavigate} />
-          )}
-
-          <DashboardCharts charts={dashboard?.charts || []} />
+          <DashboardCharts charts={(dashboard?.charts || []).filter((c) => {
+            if (role !== "admin") return true;
+            const id = String(c?.id || "").toLowerCase();
+            const title = String(c?.title || "").toLowerCase();
+            return id !== "inventory_by_status" && title !== "inventory by status";
+          })} />
 
           {role === "admin" ? (
-            <DashboardAdminActionCards
-              auditEntries={auditEntries}
-              currentUser={currentUser}
-              pendingApprovals={pendingApprovals}
-              tickets={tickets}
-              vendorBillingDashboard={vendorBillingDashboard}
-              waitingTickets={waitingTickets}
-              onOpen={setAdminDashboardPanel}
-            />
+            <>
+              <DashboardAdminBottomSection
+                tickets={tickets}
+                inventoryItems={inventoryItems}
+                onNavigate={onNavigate}
+                onOpen={setAdminDashboardPanel}
+              />
+              <DashboardActionableInsights
+                tickets={tickets}
+                pendingApprovals={pendingApprovals}
+                onNavigate={onNavigate}
+                onOpen={setAdminDashboardPanel}
+              />
+            </>
           ) : (
             <div className="ops-grid dashboard-role-grid">
               {role === "it_manager" && (
@@ -2459,11 +2663,38 @@ function DashboardAIAssistantPanel({
 
   return (
     <aside className={expanded ? "dashboard-ai-panel expanded" : "dashboard-ai-panel"} aria-label="Conci AI">
-      <div className="dashboard-ai-header">
-        <span className="dashboard-ai-icon"><Sparkles size={18} /></span>
-        <div>
-          <h2>Conci AI</h2>
-          <p>Your smart concierge</p>
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        gap: "10px",
+        padding: "16px",
+        borderBottom: "1px solid #1F1F1F",
+        background: "#141414",
+      }}>
+        <div className="conci-brand" style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1, minWidth: 0 }}>
+          <div className="conci-icon" style={{
+            width: "28px",
+            height: "28px",
+            borderRadius: "50%",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "#171717",
+            border: "1px solid rgba(255, 43, 43, 0.45)",
+            boxShadow: "0 0 14px rgba(255, 43, 43, 0.28)",
+            color: "#ff2b2b",
+            flexShrink: 0,
+          }}>
+            <Sparkles size={13} color="#ff2b2b" />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            <p className="conci-title" style={{ margin: 0, color: "#ffffff", fontSize: "14px", fontWeight: 700, lineHeight: 1.1, whiteSpace: "nowrap" }}>
+              Conci AI
+            </p>
+            <p className="conci-subtitle" style={{ margin: "2px 0 0", color: "#8f8f8f", fontSize: "11px", fontWeight: 500, lineHeight: 1.1, whiteSpace: "nowrap" }}>
+              Your AI assistant for IT operations.
+            </p>
+          </div>
         </div>
         <button
           aria-busy={refreshingContext}
@@ -2612,7 +2843,7 @@ function DashboardAIAssistantPanel({
           aria-label="Ask Conci AI"
           onChange={(event) => onDraftChange(event.target.value)}
           onKeyDown={handleComposerKeyDown}
-          placeholder={editingMessage ? "Edit your message..." : "Ask anything..."}
+          placeholder={editingMessage ? "Edit your message..." : "Ask Conci AI anything..."}
           ref={textareaRef}
           rows={2}
           value={draft}
@@ -2643,6 +2874,7 @@ function DashboardAIAssistantPanel({
           </button>
         )}
       </form>
+      <p className="dashboard-ai-footer">Conci AI can make mistakes. Verify important info.</p>
     </aside>
   );
 }
@@ -2821,7 +3053,7 @@ function formatAssistantTime(date = new Date()) {
 function DashboardQuickActions({ actions = [], currentUser, onNavigate }) {
   if (!actions.length) return null;
   return (
-    <div className="dashboard-quick-actions" aria-label="Dashboard quick actions">
+    <div className="dashboard-quick-actions" aria-label="Dashboard quick actions" style={{ display: "contents" }}>
       {actions.map((action) => {
         const Icon = DASHBOARD_QUICK_ACTION_ICONS[action.id] || ArrowRight;
         const allowed = canAccessTab(currentUser, action.target_tab);
@@ -2901,6 +3133,192 @@ function DashboardAdminActionCards({ auditEntries, currentUser, pendingApprovals
         );
       })}
     </section>
+  );
+}
+
+function DashboardActionableInsights({ tickets = [], pendingApprovals = [], onNavigate, onOpen }) {
+  const openTickets = tickets.filter((t) => ["Open", "In Progress"].includes(t.status)).length;
+  const highPriority = tickets.filter((t) => t.priority === "High" || t.priority === "Critical").length;
+  const pendingCount = pendingApprovals.filter((a) => a.status === "pending").length;
+
+  const insights = [
+    {
+      id: "ticket_volume",
+      icon: ShieldAlert,
+      title: "High Ticket Volume",
+      description: `${openTickets} tickets are currently open. Review and prioritize assignments.`,
+      ctaLabel: "View tickets",
+      onCta: () => onNavigate?.("tickets")
+    },
+    {
+      id: "sla_risk",
+      icon: Clock3,
+      title: "SLA Risk",
+      description: `${highPriority} high-priority tickets may breach SLA. Immediate attention needed.`,
+      ctaLabel: "View high priority",
+      onCta: () => onNavigate?.("tickets")
+    },
+    {
+      id: "pending_approvals",
+      icon: ShieldCheck,
+      title: "Pending Approvals",
+      description: `${pendingCount} approval${pendingCount !== 1 ? "s" : ""} waiting for review.`,
+      ctaLabel: "Review approvals",
+      onCta: () => onOpen?.("pendingApprovals")
+    },
+    {
+      id: "cost_optimization",
+      icon: DollarSign,
+      title: "Cost Optimization",
+      description: "Vendor billing review available. Check monthly spend trends.",
+      ctaLabel: "View billing",
+      onCta: () => onOpen?.("vendorBilling")
+    }
+  ];
+
+  return (
+    <section aria-label="Actionable insights">
+      <div className="section-heading" style={{ marginBottom: "12px", marginTop: "8px" }}>
+        <h2 style={{ fontSize: "15px", fontWeight: 600 }}>Actionable Insights</h2>
+      </div>
+      <div className="insights-row">
+        {insights.map((item) => (
+          <InsightCard
+            key={item.id}
+            icon={item.icon}
+            title={item.title}
+            description={item.description}
+            ctaLabel={item.ctaLabel}
+            onCta={item.onCta}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+const INVENTORY_DONUT_COLORS = ["#EF4444", "#525252", "#404040", "#2A2A2A"];
+
+function DashboardInventoryDonut({ inventoryItems = [] }) {
+  const statusOrder = ["In Use", "In Stock", "In Repair", "Retired", "Extra", "Available / Other"];
+  const counts = {};
+  inventoryItems.forEach((item) => {
+    const status = item.status || "Available / Other";
+    counts[status] = (counts[status] || 0) + 1;
+  });
+  const data = statusOrder
+    .map((status, index) => ({ name: status, value: counts[status] || 0, color: INVENTORY_DONUT_COLORS[index % INVENTORY_DONUT_COLORS.length] }))
+    .filter((d) => d.value > 0);
+  const total = data.reduce((sum, d) => sum + d.value, 0);
+  if (!total) return (
+    <div className="dashboard-chart-empty"><Package size={22} /><span>No inventory data.</span></div>
+  );
+  return (
+    <div className="admin-inventory-donut-wrap">
+      <div className="admin-inventory-donut-chart">
+        <ResponsiveContainer width="100%" height={200}>
+          <PieChart>
+            <Pie data={data} dataKey="value" nameKey="name" innerRadius={55} outerRadius={90} paddingAngle={2} startAngle={90} endAngle={-270}>
+              {data.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
+            </Pie>
+            <Tooltip content={(props) => props.active && props.payload?.length ? (
+              <div className="dashboard-chart-tooltip"><strong>{props.payload[0].name}</strong><span>{props.payload[0].value}</span></div>
+            ) : null} />
+          </PieChart>
+        </ResponsiveContainer>
+        <div className="admin-inventory-donut-center">
+          <strong>{total}</strong>
+          <span>Total</span>
+        </div>
+      </div>
+      <div className="admin-inventory-donut-legend">
+        {data.map((entry) => (
+          <div key={entry.name} className="admin-inventory-legend-row">
+            <span style={{ background: entry.color }} />
+            <span>{entry.name}</span>
+            <strong>{entry.value}</strong>
+            <em>{Math.round((entry.value / total) * 100)}%</em>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DashboardAdminBottomSection({ tickets = [], inventoryItems = [], onNavigate, onOpen }) {
+  const highPriorityTickets = tickets
+    .filter((t) => ["High", "Critical"].includes(t.priority))
+    .slice(0, 5);
+
+  function getStatusBadgeClass(status) {
+    const s = String(status || "").toLowerCase();
+    if (s === "open") return "hp-status-badge open";
+    if (s === "in progress") return "hp-status-badge in-progress";
+    if (s === "pending") return "hp-status-badge pending";
+    return "hp-status-badge";
+  }
+
+  function timeAgo(dateStr) {
+    if (!dateStr) return "";
+    const diff = Date.now() - new Date(dateStr).getTime();
+    const h = Math.floor(diff / 3600000);
+    if (h < 1) return "< 1h ago";
+    if (h < 24) return `${h}h ago`;
+    return `${Math.floor(h / 24)}d ago`;
+  }
+
+  return (
+    <div className="admin-bottom-section">
+      <section className="admin-hp-tickets-card">
+        <div className="admin-bottom-card-header">
+          <h3>Recent High Priority Tickets</h3>
+          <button type="button" className="admin-view-all-link" onClick={() => onNavigate?.("tickets")}>View all</button>
+        </div>
+        {highPriorityTickets.length === 0 ? (
+          <div className="dashboard-chart-empty"><ShieldAlert size={20} /><span>No high priority tickets.</span></div>
+        ) : (
+          <table className="hp-tickets-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Title</th>
+                <th>Category</th>
+                <th>Priority</th>
+                <th>Status</th>
+                <th>Assigned To</th>
+                <th>Updated</th>
+              </tr>
+            </thead>
+            <tbody>
+              {highPriorityTickets.map((ticket) => (
+                <tr key={ticket.id}>
+                  <td className="hp-ticket-id">{ticket.ticket_id || `#${ticket.id}`}</td>
+                  <td className="hp-ticket-title">{ticket.title}</td>
+                  <td>{ticket.category || "—"}</td>
+                  <td><span className="hp-priority-dot" /></td>
+                  <td><span className={getStatusBadgeClass(ticket.status)}>{ticket.status}</span></td>
+                  <td>
+                    <div className="hp-assignee">
+                      <span className="hp-avatar">{String(ticket.assigned_to_name || ticket.requester_name || "?")[0].toUpperCase()}</span>
+                      <span>{ticket.assigned_to_name || ticket.requester_name || "Unassigned"}</span>
+                    </div>
+                  </td>
+                  <td className="hp-updated">{timeAgo(ticket.updated_at || ticket.created_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
+
+      <section className="admin-inventory-status-card">
+        <div className="admin-bottom-card-header">
+          <h3>Inventory by Status</h3>
+          <button type="button" className="admin-view-all-link" onClick={() => onNavigate?.("inventory")}>View all</button>
+        </div>
+        <DashboardInventoryDonut inventoryItems={inventoryItems} />
+      </section>
+    </div>
   );
 }
 
@@ -3664,14 +4082,31 @@ function DashboardTooltip({ active, payload, label, valueKind }) {
   );
 }
 
+const TICKET_STATUS_BAR_COLORS = {
+  open: "#EF4444",
+  "in progress": "#525252",
+  pending: "#737373",
+  resolved: "#404040",
+  "waiting approval": "#404040",
+  closed: "#2A2A2A"
+};
+
+function getBarColor(name) {
+  return TICKET_STATUS_BAR_COLORS[String(name || "").toLowerCase()] || "#525252";
+}
+
 function DashboardBarChart({ data, valueKind }) {
   return (
     <RechartsBarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-      <CartesianGrid strokeDasharray="3 3" vertical={false} />
-      <XAxis dataKey="name" tick={{ fontSize: 11 }} interval={0} height={44} tickLine={false} axisLine={false} />
-      <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} width={42} />
+      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1F1F1F" />
+      <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#71717A" }} interval={0} height={44} tickLine={false} axisLine={false} />
+      <YAxis tick={{ fontSize: 11, fill: "#71717A" }} tickLine={false} axisLine={false} width={42} />
       <Tooltip content={(props) => <DashboardTooltip {...props} valueKind={valueKind} />} />
-      <Bar dataKey="value" radius={[8, 8, 0, 0]} fill="#4f46e5" />
+      <Bar dataKey="value" radius={[4, 4, 0, 0]}>
+        {data.map((entry) => (
+          <Cell key={entry.name} fill={getBarColor(entry.name)} />
+        ))}
+      </Bar>
     </RechartsBarChart>
   );
 }
@@ -3679,11 +4114,11 @@ function DashboardBarChart({ data, valueKind }) {
 function DashboardLineChart({ data, valueKind }) {
   return (
     <LineChart data={data} margin={{ top: 8, right: 10, left: 0, bottom: 0 }}>
-      <CartesianGrid strokeDasharray="3 3" vertical={false} />
-      <XAxis dataKey="name" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
-      <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} width={42} />
+      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#2a2a2a" />
+      <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#71717A" }} tickLine={false} axisLine={false} />
+      <YAxis tick={{ fontSize: 11, fill: "#71717A" }} tickLine={false} axisLine={false} width={42} />
       <Tooltip content={(props) => <DashboardTooltip {...props} valueKind={valueKind} />} />
-      <Line type="monotone" dataKey="value" stroke="#4f46e5" strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+      <Line type="monotone" dataKey="value" stroke="#EF4444" strokeWidth={2.5} dot={{ r: 3, fill: "#EF4444", strokeWidth: 0 }} activeDot={{ r: 5, fill: "#EF4444" }} />
     </LineChart>
   );
 }
@@ -4570,33 +5005,48 @@ function TasksView({ currentUser, onChanged, onTaskDeleted, onTaskSaved, setErro
                 <div className="vendor-filter-panel task-filter-panel" role="dialog" aria-label="Task filters">
                   <label>
                     Status
-                    <select value={taskFilters.status} onChange={(event) => updateTaskFilter("status", event.target.value)}>
-                      {taskStatusFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                    </select>
+                    <CustomSelect
+                      value={taskFilters.status}
+                      onChange={(val) => updateTaskFilter("status", val)}
+                      options={taskStatusFilterOptions.map((o) => ({ value: o, label: o }))}
+                      width="160px"
+                    />
                   </label>
                   <label>
                     Priority
-                    <select value={taskFilters.priority} onChange={(event) => updateTaskFilter("priority", event.target.value)}>
-                      {taskPriorityFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                    </select>
+                    <CustomSelect
+                      value={taskFilters.priority}
+                      onChange={(val) => updateTaskFilter("priority", val)}
+                      options={taskPriorityFilterOptions.map((o) => ({ value: o, label: o }))}
+                      width="160px"
+                    />
                   </label>
                   <label>
                     Category
-                    <select value={taskFilters.category} onChange={(event) => updateTaskFilter("category", event.target.value)}>
-                      {taskCategoryFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                    </select>
+                    <CustomSelect
+                      value={taskFilters.category}
+                      onChange={(val) => updateTaskFilter("category", val)}
+                      options={taskCategoryFilterOptions.map((o) => ({ value: o, label: o }))}
+                      width="160px"
+                    />
                   </label>
                   <label>
                     Department
-                    <select value={taskFilters.department} onChange={(event) => updateTaskFilter("department", event.target.value)}>
-                      {taskDepartmentFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                    </select>
+                    <CustomSelect
+                      value={taskFilters.department}
+                      onChange={(val) => updateTaskFilter("department", val)}
+                      options={taskDepartmentFilterOptions.map((o) => ({ value: o, label: o }))}
+                      width="160px"
+                    />
                   </label>
                   <label>
                     Assigned Role
-                    <select value={taskFilters.assignedRole} onChange={(event) => updateTaskFilter("assignedRole", event.target.value)}>
-                      {taskAssignedRoleFilterOptions.map((option) => <option key={option} value={option}>{option === "All" ? option : roleLabel(option)}</option>)}
-                    </select>
+                    <CustomSelect
+                      value={taskFilters.assignedRole}
+                      onChange={(val) => updateTaskFilter("assignedRole", val)}
+                      options={taskAssignedRoleFilterOptions.map((o) => ({ value: o, label: o === "All" ? "All" : roleLabel(o) }))}
+                      width="160px"
+                    />
                   </label>
                   <label>
                     Due Date
@@ -4689,9 +5139,12 @@ function TasksView({ currentUser, onChanged, onTaskDeleted, onTaskSaved, setErro
               <strong>{statusTask.title}</strong>
               <label className="vendor-field">
                 Status
-                <select value={statusValue} onChange={(event) => setStatusValue(event.target.value)}>
-                  {taskStatusOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
+                <CustomSelect
+                  value={statusValue}
+                  onChange={(val) => setStatusValue(val)}
+                  options={taskStatusOptions.map((o) => ({ value: o, label: o }))}
+                  width="160px"
+                />
               </label>
             </div>
             <div className="modal-actions">
@@ -4743,15 +5196,21 @@ function TasksView({ currentUser, onChanged, onTaskDeleted, onTaskSaved, setErro
               />
               <label className="vendor-field">
                 Category
-                <select onChange={(event) => updateTaskField("category", event.target.value)} value={form.category}>
-                  {taskCategoryOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
+                <CustomSelect
+                  value={form.category}
+                  onChange={(val) => updateTaskField("category", val)}
+                  options={taskCategoryOptions.map((o) => ({ value: o, label: o }))}
+                  width="160px"
+                />
               </label>
               <label className="vendor-field">
                 Department
-                <select onChange={(event) => updateTaskField("department", event.target.value)} value={form.department}>
-                  {taskDepartmentOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
+                <CustomSelect
+                  value={form.department}
+                  onChange={(val) => updateTaskField("department", val)}
+                  options={taskDepartmentOptions.map((o) => ({ value: o, label: o }))}
+                  width="160px"
+                />
                 {formErrors.department && <span>{formErrors.department}</span>}
               </label>
               <label className="vendor-field task-assignee-field">
@@ -4763,41 +5222,46 @@ function TasksView({ currentUser, onChanged, onTaskDeleted, onTaskSaved, setErro
                   type="search"
                   value={assigneeSearch}
                 />
-                <select
-                  aria-label="Assigned To"
-                  disabled={assignableLoading}
-                  onChange={(event) => updateTaskAssignee(event.target.value)}
+                <CustomSelect
                   value={selectedAssigneeValue}
-                >
-                  <option value="">{assignableLoading ? "Loading users..." : "Choose assignee"}</option>
-                  <option value="self">Myself</option>
-                  {filteredAssignableUsers.map((user) => (
-                    <option key={user.id} value={user.id}>
-                      {taskAssigneeOptionLabel(user)}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(val) => updateTaskAssignee(val)}
+                  options={[
+                    { value: "self", label: "Myself" },
+                    ...filteredAssignableUsers.map((user) => ({ value: String(user.id), label: taskAssigneeOptionLabel(user) }))
+                  ]}
+                  placeholder={assignableLoading ? "Loading users..." : "Choose assignee"}
+                  width="160px"
+                />
                 {form.assigned_email && <small>{roleLabel(form.assigned_role)} · {form.assigned_email}</small>}
                 {formErrors.assigned_to && <span>{formErrors.assigned_to}</span>}
               </label>
               <label className="vendor-field">
                 Assigned Role
-                <select onChange={(event) => updateTaskField("assigned_role", event.target.value)} value={form.assigned_role}>
-                  {taskAssignedRoleOptions.map((option) => <option key={option} value={option}>{roleLabel(option)}</option>)}
-                </select>
+                <CustomSelect
+                  value={form.assigned_role}
+                  onChange={(val) => updateTaskField("assigned_role", val)}
+                  options={taskAssignedRoleOptions.map((o) => ({ value: o, label: roleLabel(o) }))}
+                  width="160px"
+                />
               </label>
               <label className="vendor-field">
                 Priority
-                <select onChange={(event) => updateTaskField("priority", event.target.value)} value={form.priority}>
-                  {taskPriorityOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
+                <CustomSelect
+                  value={form.priority}
+                  onChange={(val) => updateTaskField("priority", val)}
+                  options={taskPriorityOptions.map((o) => ({ value: o, label: o }))}
+                  width="160px"
+                />
               </label>
               {editingTask && (
                 <label className="vendor-field">
                   Status
-                  <select onChange={(event) => updateTaskField("status", event.target.value)} value={form.status}>
-                    {taskStatusOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                  </select>
+                  <CustomSelect
+                    value={form.status}
+                    onChange={(val) => updateTaskField("status", val)}
+                    options={taskStatusOptions.map((o) => ({ value: o, label: o }))}
+                    width="160px"
+                  />
                 </label>
               )}
               <VendorField
@@ -5331,27 +5795,39 @@ function TicketsView({ currentUser, onTicketSaved, onUpdated, setError, tickets 
                 <div className="vendor-filter-panel" role="dialog" aria-label="Ticket filters">
                   <label>
                     Type
-                    <select value={ticketFilters.type} onChange={(event) => updateTicketFilter("type", event.target.value)}>
-                      {ticketTypeFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                    </select>
+                    <CustomSelect
+                      value={ticketFilters.type}
+                      onChange={(val) => updateTicketFilter("type", val)}
+                      options={ticketTypeFilterOptions.map((o) => ({ value: o, label: o }))}
+                      width="160px"
+                    />
                   </label>
                   <label>
                     Status
-                    <select value={ticketFilters.status} onChange={(event) => updateTicketFilter("status", event.target.value)}>
-                      {ticketStatusFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                    </select>
+                    <CustomSelect
+                      value={ticketFilters.status}
+                      onChange={(val) => updateTicketFilter("status", val)}
+                      options={ticketStatusFilterOptions.map((o) => ({ value: o, label: o }))}
+                      width="160px"
+                    />
                   </label>
                   <label>
                     Priority
-                    <select value={ticketFilters.priority} onChange={(event) => updateTicketFilter("priority", event.target.value)}>
-                      {ticketPriorityFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                    </select>
+                    <CustomSelect
+                      value={ticketFilters.priority}
+                      onChange={(val) => updateTicketFilter("priority", val)}
+                      options={ticketPriorityFilterOptions.map((o) => ({ value: o, label: o }))}
+                      width="160px"
+                    />
                   </label>
                   <label>
                     Branch
-                    <select value={ticketFilters.branch} onChange={(event) => updateTicketFilter("branch", event.target.value)}>
-                      {branchFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                    </select>
+                    <CustomSelect
+                      value={ticketFilters.branch}
+                      onChange={(val) => updateTicketFilter("branch", val)}
+                      options={branchFilterOptions.map((o) => ({ value: o, label: o }))}
+                      width="160px"
+                    />
                   </label>
                   <button className="table-action-button" onClick={clearTicketFilters} type="button">Clear</button>
                 </div>
@@ -5436,9 +5912,12 @@ function TicketsView({ currentUser, onTicketSaved, onUpdated, setError, tickets 
               <strong>{statusTicket.title}</strong>
               <label className="vendor-field">
                 Status
-                <select value={statusValue} onChange={(event) => setStatusValue(event.target.value)}>
-                  {ticketStatusOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
+                <CustomSelect
+                  value={statusValue}
+                  onChange={(val) => setStatusValue(val)}
+                  options={ticketStatusOptions.map((o) => ({ value: o, label: o }))}
+                  width="160px"
+                />
               </label>
             </div>
             <div className="modal-actions">
@@ -5462,22 +5941,31 @@ function TicketsView({ currentUser, onTicketSaved, onUpdated, setError, tickets 
             <div className="vendor-form-grid">
               <label className="vendor-field">
                 Type
-                <select onChange={(event) => updateTicketType(event.target.value)} value={form.ticket_type}>
-                  {ticketTypeOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
+                <CustomSelect
+                  value={form.ticket_type}
+                  onChange={(val) => updateTicketType(val)}
+                  options={ticketTypeOptions.map((o) => ({ value: o, label: o }))}
+                  width="160px"
+                />
               </label>
               <label className="vendor-field">
                 Category
-                <select onChange={(event) => updateTicketField("category", event.target.value)} value={form.category}>
-                  {categoryList.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
+                <CustomSelect
+                  value={form.category}
+                  onChange={(val) => updateTicketField("category", val)}
+                  options={categoryList.map((o) => ({ value: o, label: o }))}
+                  width="160px"
+                />
                 {formErrors.category && <span>{formErrors.category}</span>}
               </label>
               <label className="vendor-field">
                 Branch
-                <select onChange={(event) => updateTicketField("branch", event.target.value)} value={form.branch || "Pune"}>
-                  {branchOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
+                <CustomSelect
+                  value={form.branch || "Pune"}
+                  onChange={(val) => updateTicketField("branch", val)}
+                  options={branchOptions.map((o) => ({ value: o, label: o }))}
+                  width="160px"
+                />
               </label>
               <VendorField
                 error={formErrors.title}
@@ -5487,16 +5975,22 @@ function TicketsView({ currentUser, onTicketSaved, onUpdated, setError, tickets 
               />
               <label className="vendor-field">
                 Priority
-                <select onChange={(event) => updateTicketField("priority", event.target.value)} value={form.priority}>
-                  {ticketPriorityOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
+                <CustomSelect
+                  value={form.priority}
+                  onChange={(val) => updateTicketField("priority", val)}
+                  options={ticketPriorityOptions.map((o) => ({ value: o, label: o }))}
+                  width="160px"
+                />
               </label>
               {editingTicket && canUpdateTicketStatus(currentUser, editingTicket) && (
                 <label className="vendor-field">
                   Status
-                  <select onChange={(event) => updateTicketField("status", event.target.value)} value={form.status}>
-                    {ticketStatusOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                  </select>
+                  <CustomSelect
+                    value={form.status}
+                    onChange={(val) => updateTicketField("status", val)}
+                    options={ticketStatusOptions.map((o) => ({ value: o, label: o }))}
+                    width="160px"
+                  />
                 </label>
               )}
               <VendorField
@@ -6272,27 +6766,39 @@ function VendorsView({ currentUser, onChanged, setError, vendors }) {
               <div className="vendor-filter-panel" role="dialog" aria-label="Vendor filters">
                 <label>
                   Status
-                  <select value={vendorFilterDraft.status} onChange={(event) => updateVendorFilterDraft("status", event.target.value)}>
-                    {vendorStatusFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                  </select>
+                  <CustomSelect
+                    value={vendorFilterDraft.status}
+                    onChange={(val) => updateVendorFilterDraft("status", val)}
+                    options={vendorStatusFilterOptions.map((o) => ({ value: o, label: o }))}
+                    width="160px"
+                  />
                 </label>
                 <label>
                   Service
-                  <select value={vendorFilterDraft.service} onChange={(event) => updateVendorFilterDraft("service", event.target.value)}>
-                    {vendorServiceFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                  </select>
+                  <CustomSelect
+                    value={vendorFilterDraft.service}
+                    onChange={(val) => updateVendorFilterDraft("service", val)}
+                    options={vendorServiceFilterOptions.map((o) => ({ value: o, label: o }))}
+                    width="160px"
+                  />
                 </label>
                 <label>
                   Branch
-                  <select value={vendorFilterDraft.branch} onChange={(event) => updateVendorFilterDraft("branch", event.target.value)}>
-                    {branchFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                  </select>
+                  <CustomSelect
+                    value={vendorFilterDraft.branch}
+                    onChange={(val) => updateVendorFilterDraft("branch", val)}
+                    options={branchFilterOptions.map((o) => ({ value: o, label: o }))}
+                    width="160px"
+                  />
                 </label>
                 <label>
                   Billing cycle
-                  <select value={vendorFilterDraft.billingCycle} onChange={(event) => updateVendorFilterDraft("billingCycle", event.target.value)}>
-                    {vendorBillingCycleFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                  </select>
+                  <CustomSelect
+                    value={vendorFilterDraft.billingCycle}
+                    onChange={(val) => updateVendorFilterDraft("billingCycle", val)}
+                    options={vendorBillingCycleFilterOptions.map((o) => ({ value: o, label: o }))}
+                    width="160px"
+                  />
                 </label>
                 <div className="vendor-filter-actions">
                   <button className="vendor-filter-reset" onClick={clearVendorFilters} type="button">
@@ -6434,19 +6940,22 @@ function VendorsView({ currentUser, onChanged, setError, vendors }) {
               </label>
               <label className="vendor-field">
                 Branch
-                <select onChange={(event) => updateField("branch", event.target.value)} value={form.branch}>
-                  {branchOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
+                <CustomSelect
+                  value={form.branch}
+                  onChange={(val) => updateField("branch", val)}
+                  options={branchOptions.map((o) => ({ value: o, label: o }))}
+                  width="160px"
+                />
               </label>
               <label className="vendor-field">
                 Service provided
-                <select
-                  onChange={(event) => updateField("service_provided", event.target.value)}
+                <CustomSelect
                   value={form.service_provided}
-                >
-                  <option value="">Choose</option>
-                  {vendorServiceOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
+                  onChange={(val) => updateField("service_provided", val)}
+                  options={[{ value: "", label: "Choose" }, ...vendorServiceOptions.map((o) => ({ value: o, label: o }))]}
+                  placeholder="Choose"
+                  width="160px"
+                />
                 {formErrors.service_provided && <span>{formErrors.service_provided}</span>}
               </label>
               <VendorField
@@ -6476,12 +6985,12 @@ function VendorsView({ currentUser, onChanged, setError, vendors }) {
               />
               <label className="vendor-field">
                 Billing cycle
-                <select
-                  onChange={(event) => updateField("billing_cycle", event.target.value)}
+                <CustomSelect
                   value={form.billing_cycle}
-                >
-                  {billingCycleOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
+                  onChange={(val) => updateField("billing_cycle", val)}
+                  options={billingCycleOptions.map((o) => ({ value: o, label: o }))}
+                  width="160px"
+                />
                 {formErrors.billing_cycle && <span>{formErrors.billing_cycle}</span>}
               </label>
             </div>
@@ -7275,21 +7784,30 @@ function InventoryView({ currentUser, inventoryImports, inventoryItems, onChange
               <div className="vendor-filter-panel inventory-filter-panel" role="dialog" aria-label="Inventory filters">
                 <label>
                   Status
-                  <select value={inventoryFilters.status} onChange={(event) => updateInventoryFilter("status", event.target.value)}>
-                    {inventoryStatusFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                  </select>
+                  <CustomSelect
+                    value={inventoryFilters.status}
+                    onChange={(val) => updateInventoryFilter("status", val)}
+                    options={inventoryStatusFilterOptions.map((o) => ({ value: o, label: o }))}
+                    width="160px"
+                  />
                 </label>
                 <label>
                   Location
-                  <select value={inventoryFilters.location} onChange={(event) => updateInventoryFilter("location", event.target.value)}>
-                    {locationOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                  </select>
+                  <CustomSelect
+                    value={inventoryFilters.location}
+                    onChange={(val) => updateInventoryFilter("location", val)}
+                    options={locationOptions.map((o) => ({ value: o, label: o }))}
+                    width="160px"
+                  />
                 </label>
                 <label>
                   Branch
-                  <select value={inventoryFilters.branch} onChange={(event) => updateInventoryFilter("branch", event.target.value)}>
-                    {branchFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                  </select>
+                  <CustomSelect
+                    value={inventoryFilters.branch}
+                    onChange={(val) => updateInventoryFilter("branch", val)}
+                    options={branchFilterOptions.map((o) => ({ value: o, label: o }))}
+                    width="160px"
+                  />
                 </label>
                 <button className="table-action-button" onClick={clearInventoryFilters} type="button">Clear</button>
               </div>
@@ -7628,16 +8146,22 @@ function InventoryFormFields({ form, formErrors, onChange }) {
       <VendorField error={formErrors.location} label="Location" onChange={(value) => onChange("location", value)} value={form.location} />
       <label className="vendor-field">
         Branch
-        <select value={form.branch || "Pune"} onChange={(event) => onChange("branch", event.target.value)}>
-          {branchOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-        </select>
+        <CustomSelect
+          value={form.branch || "Pune"}
+          onChange={(val) => onChange("branch", val)}
+          options={branchOptions.map((o) => ({ value: o, label: o }))}
+          width="160px"
+        />
         {formErrors.branch && <span>{formErrors.branch}</span>}
       </label>
       <label className="vendor-field">
         Status
-        <select value={form.status} onChange={(event) => onChange("status", event.target.value)}>
-          {inventoryStatusOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-        </select>
+        <CustomSelect
+          value={form.status}
+          onChange={(val) => onChange("status", val)}
+          options={inventoryStatusOptions.map((o) => ({ value: o, label: o }))}
+          width="160px"
+        />
         {formErrors.status && <span>{formErrors.status}</span>}
       </label>
       <label className="vendor-field wide">
@@ -8284,33 +8808,48 @@ function TravelCalendarView({
               <div className="vendor-filter-panel travel-filter-panel" role="dialog" aria-label="Travel filters">
                 <label>
                   Department
-                  <select value={filters.department} onChange={(event) => updateFilter("department", event.target.value)}>
-                    {travelDepartmentFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                  </select>
+                  <CustomSelect
+                    value={filters.department}
+                    onChange={(val) => updateFilter("department", val)}
+                    options={travelDepartmentFilterOptions.map((o) => ({ value: o, label: o }))}
+                    width="160px"
+                  />
                 </label>
                 <label>
                   Branch
-                  <select value={filters.branch} onChange={(event) => updateFilter("branch", event.target.value)}>
-                    {branchFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                  </select>
+                  <CustomSelect
+                    value={filters.branch}
+                    onChange={(val) => updateFilter("branch", val)}
+                    options={branchFilterOptions.map((o) => ({ value: o, label: o }))}
+                    width="160px"
+                  />
                 </label>
                 <label>
                   Travel status
-                  <select value={filters.approvalStatus} onChange={(event) => updateFilter("approvalStatus", event.target.value)}>
-                    {travelStatusFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                  </select>
+                  <CustomSelect
+                    value={filters.approvalStatus}
+                    onChange={(val) => updateFilter("approvalStatus", val)}
+                    options={travelStatusFilterOptions.map((o) => ({ value: o, label: o }))}
+                    width="160px"
+                  />
                 </label>
                 <label>
                   Policy status
-                  <select value={filters.policyStatus} onChange={(event) => updateFilter("policyStatus", event.target.value)}>
-                    {travelPolicyFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                  </select>
+                  <CustomSelect
+                    value={filters.policyStatus}
+                    onChange={(val) => updateFilter("policyStatus", val)}
+                    options={travelPolicyFilterOptions.map((o) => ({ value: o, label: o }))}
+                    width="160px"
+                  />
                 </label>
                 <label>
                   Travel mode
-                  <select value={filters.travelMode} onChange={(event) => updateFilter("travelMode", event.target.value)}>
-                    {travelModeFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                  </select>
+                  <CustomSelect
+                    value={filters.travelMode}
+                    onChange={(val) => updateFilter("travelMode", val)}
+                    options={travelModeFilterOptions.map((o) => ({ value: o, label: o }))}
+                    width="160px"
+                  />
                 </label>
                 <VendorField label="From date" onChange={(value) => updateFilter("startDate", value)} type="date" value={filters.startDate} />
                 <VendorField label="To date" onChange={(value) => updateFilter("endDate", value)} type="date" value={filters.endDate} />
@@ -8393,9 +8932,12 @@ function TravelCalendarView({
               <VendorField error={formErrors.department} label="Department" onChange={(value) => updateTravelField("department", value)} value={travelForm.department} />
               <label className="vendor-field">
                 Branch
-                <select onChange={(event) => updateTravelField("branch", event.target.value)} value={travelForm.branch || "Pune"}>
-                  {branchOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
+                <CustomSelect
+                  value={travelForm.branch || "Pune"}
+                  onChange={(val) => updateTravelField("branch", val)}
+                  options={branchOptions.map((o) => ({ value: o, label: o }))}
+                  width="160px"
+                />
               </label>
               <VendorField error={formErrors.destination_from} label="Destination from" onChange={(value) => updateTravelField("destination_from", value)} value={travelForm.destination_from} />
               <VendorField error={formErrors.destination_to} label="Destination to" onChange={(value) => updateTravelField("destination_to", value)} value={travelForm.destination_to} />
@@ -8404,30 +8946,42 @@ function TravelCalendarView({
               <VendorField error={formErrors.purpose} label="Purpose" onChange={(value) => updateTravelField("purpose", value)} value={travelForm.purpose} />
               <label className="vendor-field">
                 Travel mode
-                <select onChange={(event) => updateTravelField("travel_mode", event.target.value)} value={travelForm.travel_mode}>
-                  {travelModeOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
+                <CustomSelect
+                  value={travelForm.travel_mode}
+                  onChange={(val) => updateTravelField("travel_mode", val)}
+                  options={travelModeOptions.map((o) => ({ value: o, label: o }))}
+                  width="160px"
+                />
               </label>
               <VendorField error={formErrors.estimated_budget} label="Estimated budget" onChange={(value) => updateTravelField("estimated_budget", value.replace(/[^\d.]/g, ""))} value={travelForm.estimated_budget} />
               <VendorField error={formErrors.actual_spend} label="Actual spend" onChange={(value) => updateTravelField("actual_spend", value.replace(/[^\d.]/g, ""))} value={travelForm.actual_spend} />
               <VendorField error={formErrors.number_of_trips} inputMode="numeric" label="Number of trips" onChange={(value) => updateTravelField("number_of_trips", value.replace(/\D/g, ""))} value={travelForm.number_of_trips} />
               <label className="vendor-field">
                 Approval status
-                <select onChange={(event) => updateTravelField("approval_status", event.target.value)} value={travelForm.approval_status}>
-                  {travelStatusOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
+                <CustomSelect
+                  value={travelForm.approval_status}
+                  onChange={(val) => updateTravelField("approval_status", val)}
+                  options={travelStatusOptions.map((o) => ({ value: o, label: o }))}
+                  width="160px"
+                />
               </label>
               <label className="vendor-field">
                 Policy status
-                <select onChange={(event) => updateTravelField("policy_status", event.target.value)} value={travelForm.policy_status}>
-                  {travelPolicyStatusOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
+                <CustomSelect
+                  value={travelForm.policy_status}
+                  onChange={(val) => updateTravelField("policy_status", val)}
+                  options={travelPolicyStatusOptions.map((o) => ({ value: o, label: o }))}
+                  width="160px"
+                />
               </label>
               <label className="vendor-field">
                 Booking status
-                <select onChange={(event) => updateTravelField("booking_status", event.target.value)} value={travelForm.booking_status}>
-                  {travelStatusOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
+                <CustomSelect
+                  value={travelForm.booking_status}
+                  onChange={(val) => updateTravelField("booking_status", val)}
+                  options={travelStatusOptions.map((o) => ({ value: o, label: o }))}
+                  width="160px"
+                />
               </label>
               <VendorField label="Google Calendar event ID" onChange={(value) => updateTravelField("google_calendar_event_id", value)} value={travelForm.google_calendar_event_id} />
               <VendorField label="Google sync status" onChange={(value) => updateTravelField("google_sync_status", value)} value={travelForm.google_sync_status} />
@@ -8459,9 +9013,12 @@ function TravelCalendarView({
               <VendorField error={formErrors.title} label="Title" onChange={(value) => updateEventField("title", value)} value={eventForm.title} />
               <label className="vendor-field">
                 Event type
-                <select onChange={(event) => updateEventField("event_type", event.target.value)} value={eventForm.event_type}>
-                  {calendarEventTypeOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
+                <CustomSelect
+                  value={eventForm.event_type}
+                  onChange={(val) => updateEventField("event_type", val)}
+                  options={calendarEventTypeOptions.map((o) => ({ value: o, label: o }))}
+                  width="160px"
+                />
               </label>
               <VendorField error={formErrors.start_datetime} label="Start date/time" onChange={(value) => updateEventField("start_datetime", value)} type="datetime-local" value={eventForm.start_datetime} />
               <VendorField error={formErrors.end_datetime} label="End date/time" onChange={(value) => updateEventField("end_datetime", value)} type="datetime-local" value={eventForm.end_datetime} />
@@ -8471,9 +9028,12 @@ function TravelCalendarView({
               <VendorField label="Reminder" onChange={(value) => updateEventField("reminder", value)} value={eventForm.reminder} />
               <label className="vendor-field">
                 Status
-                <select onChange={(event) => updateEventField("status", event.target.value)} value={eventForm.status}>
-                  {calendarEventStatusOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
+                <CustomSelect
+                  value={eventForm.status}
+                  onChange={(val) => updateEventField("status", val)}
+                  options={calendarEventStatusOptions.map((o) => ({ value: o, label: o }))}
+                  width="160px"
+                />
               </label>
               <VendorField label="Google Calendar event ID" onChange={(value) => updateEventField("google_calendar_event_id", value)} value={eventForm.google_calendar_event_id} />
               <VendorField label="Google sync status" onChange={(value) => updateEventField("google_sync_status", value)} value={eventForm.google_sync_status} />
@@ -9022,27 +9582,39 @@ function ExpenseView({ currentUser, expenses, onChanged, onExpenseSaved, setErro
                 <div className="vendor-filter-panel" role="dialog" aria-label="Expense filters">
                   <label>
                     Category
-                    <select value={expenseFilters.category} onChange={(event) => updateExpenseFilter("category", event.target.value)}>
-                      {expenseCategoryFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                    </select>
+                    <CustomSelect
+                      value={expenseFilters.category}
+                      onChange={(val) => updateExpenseFilter("category", val)}
+                      options={expenseCategoryFilterOptions.map((o) => ({ value: o, label: o }))}
+                      width="160px"
+                    />
                   </label>
                   <label>
                     Status
-                    <select value={expenseFilters.status} onChange={(event) => updateExpenseFilter("status", event.target.value)}>
-                      {expenseStatusFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                    </select>
+                    <CustomSelect
+                      value={expenseFilters.status}
+                      onChange={(val) => updateExpenseFilter("status", val)}
+                      options={expenseStatusFilterOptions.map((o) => ({ value: o, label: o }))}
+                      width="160px"
+                    />
                   </label>
                   <label>
                     Department
-                    <select value={expenseFilters.department} onChange={(event) => updateExpenseFilter("department", event.target.value)}>
-                      {expenseDepartmentFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                    </select>
+                    <CustomSelect
+                      value={expenseFilters.department}
+                      onChange={(val) => updateExpenseFilter("department", val)}
+                      options={expenseDepartmentFilterOptions.map((o) => ({ value: o, label: o }))}
+                      width="160px"
+                    />
                   </label>
                   <label>
                     Branch
-                    <select value={expenseFilters.branch} onChange={(event) => updateExpenseFilter("branch", event.target.value)}>
-                      {branchFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                    </select>
+                    <CustomSelect
+                      value={expenseFilters.branch}
+                      onChange={(val) => updateExpenseFilter("branch", val)}
+                      options={branchFilterOptions.map((o) => ({ value: o, label: o }))}
+                      width="160px"
+                    />
                   </label>
                   <button className="table-action-button" onClick={clearExpenseFilters} type="button">Clear</button>
                 </div>
@@ -9190,15 +9762,21 @@ function ExpenseView({ currentUser, expenses, onChanged, onExpenseSaved, setErro
               </label>
               <label className="vendor-field">
                 Branch
-                <select onChange={(event) => updateExpenseField("branch", event.target.value)} value={form.branch || "Pune"}>
-                  {branchOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
+                <CustomSelect
+                  value={form.branch || "Pune"}
+                  onChange={(val) => updateExpenseField("branch", val)}
+                  options={branchOptions.map((o) => ({ value: o, label: o }))}
+                  width="160px"
+                />
               </label>
               <label className="vendor-field">
                 Category
-                <select onChange={(event) => updateExpenseField("category", event.target.value)} value={form.category}>
-                  {expenseCategoryOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
+                <CustomSelect
+                  value={form.category}
+                  onChange={(val) => updateExpenseField("category", val)}
+                  options={expenseCategoryOptions.map((o) => ({ value: o, label: o }))}
+                  width="160px"
+                />
               </label>
               <VendorField error={formErrors.vendor_merchant} label="Vendor/Merchant" onChange={(value) => updateExpenseField("vendor_merchant", value)} value={form.vendor_merchant} />
               <VendorField error={formErrors.amount} label="Amount" onChange={(value) => updateExpenseField("amount", value.replace(/[^\d.]/g, ""))} value={form.amount} />
@@ -9206,22 +9784,31 @@ function ExpenseView({ currentUser, expenses, onChanged, onExpenseSaved, setErro
               <VendorField error={formErrors.expense_date} helper={form.expense_date ? `Selected: ${formatCalendarDate(form.expense_date)}` : "Choose expense date"} label="Expense date" onChange={(value) => updateExpenseField("expense_date", value)} type="date" value={form.expense_date} />
               <label className="vendor-field">
                 Payment mode
-                <select onChange={(event) => updateExpenseField("payment_mode", event.target.value)} value={form.payment_mode}>
-                  {expensePaymentModeOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
+                <CustomSelect
+                  value={form.payment_mode}
+                  onChange={(val) => updateExpenseField("payment_mode", val)}
+                  options={expensePaymentModeOptions.map((o) => ({ value: o, label: o }))}
+                  width="160px"
+                />
               </label>
               <label className="vendor-field">
                 Receipt status
-                <select onChange={(event) => updateExpenseField("receipt_status", event.target.value)} value={form.receipt_status}>
-                  {expenseReceiptStatusOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
+                <CustomSelect
+                  value={form.receipt_status}
+                  onChange={(val) => updateExpenseField("receipt_status", val)}
+                  options={expenseReceiptStatusOptions.map((o) => ({ value: o, label: o }))}
+                  width="160px"
+                />
               </label>
               <VendorField label="Receipt attachment name" onChange={(value) => updateExpenseField("receipt_attachment_name", value)} value={form.receipt_attachment_name} />
               <label className="vendor-field">
                 Status
-                <select onChange={(event) => updateExpenseField("status", event.target.value)} value={form.status}>
-                  {expenseStatusOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
+                <CustomSelect
+                  value={form.status}
+                  onChange={(val) => updateExpenseField("status", val)}
+                  options={expenseStatusOptions.map((o) => ({ value: o, label: o }))}
+                  width="160px"
+                />
               </label>
               <label className="ticket-checkbox wide">
                 <input checked={form.approval_required} onChange={(event) => updateExpenseField("approval_required", event.target.checked)} type="checkbox" />
@@ -9738,27 +10325,39 @@ function ReportsView({ currentUser, onChanged, onReportDeleted, onReportSaved, r
                 <div className="vendor-filter-panel report-filter-panel" role="dialog" aria-label="Report filters">
                   <label>
                     Department
-                    <select value={filters.department} onChange={(event) => updateFilter("department", event.target.value)}>
-                      {departmentFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                    </select>
+                    <CustomSelect
+                      value={filters.department}
+                      onChange={(val) => updateFilter("department", val)}
+                      options={departmentFilterOptions.map((o) => ({ value: o, label: o }))}
+                      width="160px"
+                    />
                   </label>
                   <label>
                     Report Type
-                    <select value={filters.reportType} onChange={(event) => updateFilter("reportType", event.target.value)}>
-                      {reportTypeFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                    </select>
+                    <CustomSelect
+                      value={filters.reportType}
+                      onChange={(val) => updateFilter("reportType", val)}
+                      options={reportTypeFilterOptions.map((o) => ({ value: o, label: o }))}
+                      width="160px"
+                    />
                   </label>
                   <label>
                     File Type
-                    <select value={filters.fileType} onChange={(event) => updateFilter("fileType", event.target.value)}>
-                      {fileTypeFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                    </select>
+                    <CustomSelect
+                      value={filters.fileType}
+                      onChange={(val) => updateFilter("fileType", val)}
+                      options={fileTypeFilterOptions.map((o) => ({ value: o, label: o }))}
+                      width="160px"
+                    />
                   </label>
                   <label>
                     Status
-                    <select value={filters.status} onChange={(event) => updateFilter("status", event.target.value)}>
-                      {statusFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                    </select>
+                    <CustomSelect
+                      value={filters.status}
+                      onChange={(val) => updateFilter("status", val)}
+                      options={statusFilterOptions.map((o) => ({ value: o, label: o }))}
+                      width="160px"
+                    />
                   </label>
                   <VendorField label="Uploaded Date" onChange={(value) => updateFilter("uploadedDate", value)} type="date" value={filters.uploadedDate} />
                   <button className="table-action-button" onClick={clearFilters} type="button">Clear</button>
@@ -9826,15 +10425,21 @@ function ReportsView({ currentUser, onChanged, onReportDeleted, onReportSaved, r
               <VendorField error={formErrors.report_name} label="Report Name" onChange={(value) => updateReportField("report_name", value)} value={form.report_name} />
               <label className="vendor-field">
                 Report Type
-                <select onChange={(event) => updateReportField("report_type", event.target.value)} value={form.report_type}>
-                  {reportTypeOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
+                <CustomSelect
+                  value={form.report_type}
+                  onChange={(val) => updateReportField("report_type", val)}
+                  options={reportTypeOptions.map((o) => ({ value: o, label: o }))}
+                  width="160px"
+                />
               </label>
               <label className="vendor-field">
                 Department
-                <select onChange={(event) => updateReportField("department", event.target.value)} value={form.department}>
-                  {(allowedDepartments.length ? allowedDepartments : reportDepartmentOptions).map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
+                <CustomSelect
+                  value={form.department}
+                  onChange={(val) => updateReportField("department", val)}
+                  options={(allowedDepartments.length ? allowedDepartments : reportDepartmentOptions).map((o) => ({ value: o, label: o }))}
+                  width="160px"
+                />
                 {formErrors.department && <span>{formErrors.department}</span>}
               </label>
               <label className="vendor-field wide">
@@ -10797,10 +11402,12 @@ function SettingsView({ currentUser, health, onChanged, setError, users }) {
                   <div className="vendor-filter-panel user-filter-panel" role="dialog" aria-label="User filters">
                     <label>
                       Role
-                      <select value={userFilters.role} onChange={(event) => setUserFilters((current) => ({ ...current, role: event.target.value }))}>
-                        <option value="All">All</option>
-                        {roleOptions.map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}
-                      </select>
+                      <CustomSelect
+                        value={userFilters.role}
+                        onChange={(val) => setUserFilters((current) => ({ ...current, role: val }))}
+                        options={[{ value: "All", label: "All" }, ...roleOptions.map((r) => ({ value: r, label: roleLabel(r) }))]}
+                        width="160px"
+                      />
                     </label>
                     <button className="table-action-button" onClick={() => setUserFilters({ role: "All" })} type="button">Clear</button>
                   </div>
@@ -10859,9 +11466,12 @@ function SettingsView({ currentUser, health, onChanged, setError, users }) {
               </label>
               <label className="vendor-field wide">
                 Role
-                <select value={form.role} onChange={(event) => updateCreateField("role", event.target.value)}>
-                  {roleOptions.map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}
-                </select>
+                <CustomSelect
+                  value={form.role}
+                  onChange={(val) => updateCreateField("role", val)}
+                  options={roleOptions.map((r) => ({ value: r, label: roleLabel(r) }))}
+                  width="160px"
+                />
                 {formErrors.role && <span>{formErrors.role}</span>}
               </label>
             </div>
@@ -10991,9 +11601,12 @@ function UserManagement({ currentUser, filteredUsers, onChanged, setError, total
                   <input className="user-table-input" aria-label={`Email for ${user.email}`} type="email" value={edit.email} onChange={(event) => setEdits({ ...edits, [user.id]: { ...edit, email: event.target.value } })} />
                 </td>
                 <td>
-                  <select value={edit.role} onChange={(event) => setEdits({ ...edits, [user.id]: { ...edit, role: event.target.value } })}>
-                    {roleOptions.map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}
-                  </select>
+                  <CustomSelect
+                    value={edit.role}
+                    onChange={(val) => setEdits({ ...edits, [user.id]: { ...edit, role: val } })}
+                    options={roleOptions.map((r) => ({ value: r, label: roleLabel(r) }))}
+                    width="160px"
+                  />
                 </td>
                 <td>
                   <div className="user-actions-cell">

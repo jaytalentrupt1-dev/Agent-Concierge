@@ -4,7 +4,7 @@ This file is the source-of-truth handoff note for future Codex sessions. It is b
 
 ## Latest Session Snapshot
 
-Last updated during the current Codex session on 2026-05-15 after making Dashboard Tasks by Status count actual role-filtered task statuses, including Cancelled, plus shared overdue counts.
+Last updated during the current Codex session on 2026-05-22 after a comprehensive frontend UI overhaul: full dark/red theme (`#0A0A0A` bg, `#EF4444` red accent), SearchBar component, new notification bell with animations, pill-shaped theme toggle, Conci AI sidebar restyle, global micro-interactions, and full blue→red theme conversion across all pages. Backend now runs on port 8001.
 
 Product goal:
 
@@ -50,8 +50,10 @@ Current UI/navigation status:
 - Desktop left sidebar has been removed.
 - The top app header follows the Agent Concierge reference UI:
   - left AC square logo and `Agent Concierge` brand
-  - center global search input with search icon, `Search anything...` placeholder, and `⌘ K` hint
-  - notification bell with red badge, sun/moon theme toggle, divider, and user profile dropdown on the right
+  - center global search bar: pill/capsule shape, red border glow on focus, `Search anything...` placeholder (no ⌘K badge), dark background `#111111` in dark mode, adapts to light mode
+  - notification bell: 38×38 dark container (`#141414`), red glow border, bell-ring hover animation, pulsing red dot badge (numeric badge when >9 notifications); adapts to light mode
+  - pill-shaped sun/moon theme toggle with sliding circular indicator, sun-spin/moon-fade animations, and smooth page-wide transition
+  - user profile dropdown on the right
 - The top-right user profile area opens a compact light/dark profile dropdown with a pointer, initials avatar, name/email, and only a Logout action. Logout clears the current session. The dropdown closes on outside click or Escape.
 - Main app navigation is a rounded horizontal section container under the top utility bar and is filtered per logged-in role.
 - Admin navigation shows Dashboard, Vendors, Tasks, Tickets, Travel & Calendar, Expenses, Inventory, Reports, and Settings.
@@ -67,7 +69,7 @@ Current UI/navigation status:
 - Top utility actions use the visual reference shell; Mock/OpenAI runtime mode remains visible in Settings.
 - Light mode is default.
 - Dark mode is supported via the sun/moon toggle and stored in `localStorage` as `admin_agent_theme`.
-- The temporary simple neutral global theme was reverted. The UI uses the previous Agent Concierge visual style with purple/blue accents, gradients, status badges/pills, existing button styles, existing table header styling, and the earlier light/dark mode contrast behavior.
+- The UI uses a polished dark/red Agent Concierge design: `#0A0A0A` page background, `#EF4444` red accent, `#FFFFFF` primary text, `#141414` card backgrounds, `#1F1F1F` borders. All previously purple/blue accents (dropdowns, filter pills, pagination, checkboxes, focus rings) have been converted to the red dark theme. Light mode retains readable contrast with `#F4F4F5` surfaces and dark text.
 
 Current login/auth status:
 
@@ -472,15 +474,15 @@ Current known bugs/issues:
 - Email/WhatsApp connector sends require a user preview/confirm step and role permission checks, but Conci AI does not yet execute send commands end-to-end; it should prepare drafts/preview data rather than auto-send sensitive external messages.
 - OpenAI planner mode requires a real API key and network/API availability; transcript summarization OpenAI mode is not production-confirmed.
 - DeepInfra Conci AI mode requires a real DeepInfra API key and network/API availability; without that, Conci AI remains local/mock.
-- `VITE_API_BASE_URL` is supported in frontend code but not yet documented in README.
+- `VITE_API_BASE_URL` is configured in `frontend/.env` as `http://127.0.0.1:8001` and must match the backend port. Not yet documented in README.
 
 Current run commands:
 
 ```bash
-# Backend
+# Backend (port 8001 — must match VITE_API_BASE_URL=http://127.0.0.1:8001 in frontend/.env)
 cd backend
 source .venv/bin/activate
-uvicorn app.main:app --host 127.0.0.1 --port 8000
+uvicorn app.main:app --host 0.0.0.0 --port 8001
 
 # Frontend
 cd frontend
@@ -539,10 +541,12 @@ Backend:
 
 Frontend:
 
-- React
-- Vite
+- React 18
+- Vite 6
 - `lucide-react` icons
-- Plain CSS in `frontend/src/styles.css`
+- `recharts` for dashboard charts
+- CSS: `frontend/src/styles.css` (legacy, ~9k lines, imported first) + `frontend/src/styles/globals.css` (override layer with `!important`, imported second in `main.jsx`) — globals.css wins all specificity battles
+- `frontend/src/components/KpiCard.jsx` — reusable KPI summary card component
 
 Testing:
 
@@ -897,8 +901,8 @@ Confirmed UI elements:
 
 Current operations-demo styling status:
 
-- The app uses a light enterprise/admin visual style: white/off-white workspace, top horizontal navigation, soft borders, rounded cards, subtle shadows, and purple/blue accents.
-- The top utility row uses a larger AC gradient logo, `Agent Concierge` product name, `Search anything...`, command-key hint, notification icon with red badge, sun/moon theme toggle, divider, and logged-in user chip.
+- The app uses a dark SaaS admin visual style: `#0A0A0A` background, `#141414` card surfaces, `#1F1F1F` borders, `#EF4444` red accent throughout — buttons, badges, focus rings, filter pills, pagination active state, and chart accents. Light mode uses `#F4F4F5`/`#FFFFFF` surfaces with dark text and muted red accents. Purple/blue accents have been fully removed.
+- The top utility row uses the AC logo, `Agent Concierge` product name, pill-shaped `SearchBar` component (red border glow, no ⌘K), notification bell with red glow container and animations, pill theme toggle, divider, and logged-in user chip.
 - The section navigation is a rounded horizontal row below the utility controls and is role-filtered. The old desktop left sidebar/collapse control has been removed.
 - The top search submits to the best matching allowed section and filters visible dashboard data, tasks, tickets/approvals, vendors, expenses, and audit items by the typed query.
 - The notification icon opens a real notifications dropdown. The badge shows the unread notification count only, with no static fallback count.
@@ -911,7 +915,8 @@ Current operations-demo styling status:
 - Light mode is the default theme.
 - Dark mode is supported through a sun/moon toggle in the top header.
 - Theme preference is stored in `localStorage` as `admin_agent_theme` and restored on reload.
-- Dark mode uses the previous Agent Concierge dark-mode contrast behavior with accent styling and readable inputs/cards.
+- Dark mode is the primary visual style. The `html[data-theme="dark"]` attribute controls theme; `globals.css` uses `html:not([data-theme="dark"])` for light mode overrides. Theme transitions use a scoped `html.theme-transitioning` class for smooth page-wide animations.
+- All page-level search bars use the `.vendor-search-control` CSS class and are styled identically: 999px border-radius, `#111111` dark background, red border with glow, no blue focus rings. Global blue focus rings are removed via `input:focus { outline: none !important }` in globals.css.
 - The dashboard cards use screenshot-inspired headers, View all actions, row-based content, and footer links.
 - The Human Ticket Queue is visually emphasized on the dashboard and keeps role-based approval controls.
 - The layout is responsive for laptop demos and collapses navigation/card grids on smaller screens.
@@ -961,7 +966,8 @@ Dashboard command center behavior:
 - IT Manager Dashboard uses the same theme-aware command-center shell, renders IT charts as a compact three-card row on desktop, and shows bottom compact cards for Recent Tickets, Pending Approvals, Recent Activity, and Vendor Billing Dashboard; those cards open role-scoped detail modals and do not expose finance expense details or admin-only user data.
 - Finance Manager Dashboard uses the same theme-aware command-center shell, omits the quick-action row to match the Finance reference layout, places compact action cards directly below the summary row, renders finance charts in a reduced-height two-by-two grid, shows Expense Exceptions/Pending Finance Approvals/Recent Travel Records lower on the page, and keeps Vendor Billing Dashboard in the compact cards/modal flow. The finance compact cards use finance-scoped tickets, approvals, audit logs, and vendor billing data and do not expose IT-only or admin-only user/settings data.
 - Employee Dashboard uses the same theme-aware command-center shell, shows four personal summary cards in one row on desktop, keeps Create Ticket and Create Task Request quick actions, shows My Recent Tickets/My Tasks/My Requests, and adds bottom compact cards for Recent Tickets, Pending Approvals, Recent Activity, and My Pending Requests. Employee compact cards open modals backed only by the employee's own visible tickets, tasks, pending request status, and activity.
-- The `Conci AI` panel has a polished theme-aware chat UI across Admin, IT Manager, Finance Manager, and Employee dashboards: rounded light/dark panel container, large sparkle icon header, title/subtitle, refresh-context, expand/collapse, trash/clear-chat, and close controls, an open-again button when closed, readable timestamps on user bubbles, right-aligned purple user messages, left-aligned assistant card messages, neutral source/category pills, animated typing dots, compact icon+text role-aware suggestion chips, and a bottom composer with attachment, current-input clear `X`, and send icon buttons. The input clear button clears only the typed draft, while the header trash button remains the only full chat-clear control. Assistant table responses render inside the message bubble with sticky headers, horizontal/vertical scrolling inside the table area only, and theme-readable rows so large vendor/ticket/expense tables do not overflow the chat panel. The previous footer note `Conci AI responses may be inaccurate.` has been removed from the UI.
+- The `Conci AI` sidebar header uses a 28×28 circle icon (`.conci-icon` CSS class: `#171717` bg, red border/glow, Sparkles icon), `.conci-brand` wrapper, `.conci-title` (`Conci AI`), and `.conci-subtitle` (`Your AI assistant for IT operations.`) CSS classes defined in globals.css.
+- The `Conci AI` panel has a polished theme-aware chat UI across Admin, IT Manager, Finance Manager, and Employee dashboards: rounded light/dark panel container, Conci brand header with 28px circle icon, title/subtitle, refresh-context, expand/collapse, trash/clear-chat, and close controls, an open-again button when closed, readable timestamps on user bubbles, right-aligned purple user messages, left-aligned assistant card messages, neutral source/category pills, animated typing dots, compact icon+text role-aware suggestion chips, and a bottom composer with attachment, current-input clear `X`, and send icon buttons. The input clear button clears only the typed draft, while the header trash button remains the only full chat-clear control. Assistant table responses render inside the message bubble with sticky headers, horizontal/vertical scrolling inside the table area only, and theme-readable rows so large vendor/ticket/expense tables do not overflow the chat panel. The previous footer note `Conci AI responses may be inaccurate.` has been removed from the UI.
 - `Conci AI` sends user messages to `POST /api/chat/assistant`; the older `POST /api/chatbot/ask` route remains as a compatibility alias. The assistant endpoint accepts normal JSON chat requests and browser `multipart/form-data` chat requests with an attached file. The frontend sends a compact recent chat history payload with each request so the backend can resolve follow-up clarifications such as `I want earlier history` against the previous ticket/task/vendor/inventory topic without losing role safety. It identifies the logged-in user from the bearer token, fetches fresh repository data at ask time, filters app data with the same backend role helpers used by the app pages, and returns safe `answer`, `bullets`, `source`, and optional compact `table` fields. When Conci AI creates or updates a record and returns a `created_record_id`, the Dashboard chat panel triggers a non-destructive app data refresh so summary cards, charts, notifications, and tables catch up without clearing chat history or draft text.
 - `Conci AI` now acts as a small role-based action agent, not only a Q&A bot. `backend/app/services/conci_agent.py` owns structured action-intent detection and returns `intent`, `confidence`, `entities`, `required_role_scope`, `action_type`, `missing_fields`, and `confirmation_required`. The local fallback normalizes text, corrects common typos such as `sho`, `shoe`, `tikcet`, `tikets`, `deatils`, `panding`, and `inventry`, uses synonym phrases plus token/sequence/ngram similarity, and extracts entities such as ticket IDs, requested record counts, service names, and date ranges. If `AI_PROVIDER=deepinfra` and a real DeepInfra key are configured, `backend/app/services/deepinfra_service.py` is asked first to classify the full user sentence into the allowed intent IDs. For clarification messages, the classifier receives a small previous-topic hint such as `Previous chat topic: tickets`; hidden app rows are never sent. Local priority guards still override obvious external misclassifications such as `calendar events` becoming a date question. Follow-up phrases such as `show more`, `give all`, `show all`, `only`, and `earlier history` continue the recent ticket/task/vendor/inventory/expense/travel/calendar/approval topic instead of falling through to an unrelated utility answer. OpenAI intent/refinement remains available when OpenAI mode is explicitly configured, but DeepInfra takes precedence for Conci AI when selected. The backend action layer can answer date/time utility questions, create tickets from natural-language issue text, ask follow-up questions when ticket/task/vendor details are missing, create role-scoped task requests, check visible ticket status by ticket ID or by full-sentence subject such as `status of my vendor issue ticket`, require confirmation before ticket status updates, update ticket status only for roles with status permission, return IT inventory update tables, inventory in-use/submitted-to-vendor tables, Finance month-wise/category-wise/pending expense summaries, last-month expense and travel spend summaries, recent travel records, overdue task tables, and report summaries. Agent responses can include `next_question`, `action_required`, `confirmation_required`, `created_record_id`, and optional action metadata for frontend confirmation controls.
 - Chat input is a controlled editable multiline composer: users can click, type, select, delete, copy/paste, and edit before sending; Enter sends, Shift+Enter inserts a new line; blank sends are blocked; the send button is disabled while an answer is loading; the textarea auto-expands with typed content instead of adding an internal scrollbar; input text is cleared only after successful text submission. Chat history, pending draft text, loading state, and the active request controller are stored at the top app level plus `sessionStorage`, so route/page navigation, resizing, closing/reopening, and returning to Dashboard do not wipe the conversation or abort an in-flight response. Only the Stop button, logout, or browser close/refresh cancels the active request.
@@ -1052,6 +1058,52 @@ Vendors page current behavior:
 - Updating a vendor records `vendor.updated` in the audit log with vendor name and actor identity.
 - Closing a vendor records `vendor.closed`; reopening a vendor records `vendor.reopened`.
 
+## 12b. CSS Architecture and Animation System
+
+CSS load order in `frontend/src/main.jsx`:
+1. `import "./styles.css"` — legacy ~9k-line stylesheet (rendered first, lower specificity)
+2. `import "./styles/globals.css"` — override layer (rendered second, wins via `!important`)
+
+**globals.css key blocks (all appended at end of file):**
+
+- `.conci-brand`, `.conci-icon`, `.conci-title`, `.conci-subtitle` — Conci AI sidebar header brand classes
+- `.utility-search-form` — flex layout for top navbar search bar, `flex: 1; max-width: 600px`
+- `@keyframes bellRing` + `.notification-btn:hover .bell-icon` — bell hover animation
+- `@keyframes pulse` + `.notification-dot` — pulsing red dot badge
+- `@keyframes sunSpin`, `@keyframes moonFade` — `.sun-active`, `.moon-active` for theme toggle icons
+- `.toggle-slider` — sliding circle indicator for pill theme toggle
+- `html.theme-transitioning *` — scoped 350ms page-wide transition during theme switch
+- Global micro-interactions: `*` base transitions, `.primary-button` lift/glow, `.icon-button` hover, `button:active` scale, `.nav-item::after` underline, card hover lifts, `tbody tr` row hover
+- `@keyframes pageFadeIn, modalIn, dropdownIn, shimmer, messageIn, typingDot, badgePulse` — animation keyframes
+- `.app-header { display: flex !important; flex-direction: column }` — fixes navbar search bar layout consistency across all pages
+- `.vendor-search-control` — all 8 page search bars: 999px radius, `#111111` bg, red border/glow, white text, light mode overrides
+- `input:focus { outline: none !important }` — removes blue focus rings globally
+- `::selection { background: rgba(239,68,68,0.3) }` — red text selection
+- `select` dark mode styling — removes blue/OS native styling
+- `[role="option"], [role="menuitem"]` — red hover/active for dropdown options
+- `.inventory-summary-card` — filter pills (In Use/Extra/Submitted): dark `#1A1A1A` bg, red active state
+- `.vendor-filter-panel` — dark `#141414` filter dropdown panel
+- `input[type="checkbox"], input[type="radio"] { accent-color: #EF4444 }` — red checkboxes/radios
+- `.pagination-controls button, .inventory-pagination-controls button` — dark/red pagination buttons
+
+**SearchBar React component** (defined in `App.jsx` before the `App()` function):
+- Props: `value`, `onChange`, `onClear`, `isDark` (default: true)
+- Uses `useState` (not `React.useState` — App.jsx uses named imports only)
+- Pill shape, red border glow on focus, adapts background/text to `isDark`
+- Rendered inside `.utility-search-form` in the top utility bar
+
+**Notification bell** (inline JSX in App.jsx):
+- `div.notification-btn` replacing old `button.notification-button`
+- 38×38px, `#141414` bg, red border, red glow box-shadow
+- `Bell` lucide icon with `.bell-icon` class for animation targeting
+- Numeric badge (>9 notifications) or pulsing 8px red dot (≤9)
+- Hover handlers via `onMouseEnter`/`onMouseLeave` inline styles
+
+**Theme toggle** (inline JSX in App.jsx):
+- `div.theme-toggle` pill container with `div.toggle-slider` absolute sliding circle
+- Sun/moon icons with `.sun-active`/`.moon-active` classes for spin/fade animations
+- `toggleTheme()` adds `html.theme-transitioning` class, removes after 350ms
+
 ## 13. Important Files and Folders
 
 Repo root:
@@ -1086,8 +1138,11 @@ Frontend:
 - `frontend/src/api.js`: API client
 - `frontend/src/vendorBilling.js`: vendor billing display helper
 - `frontend/src/vendorBilling.test.mjs`: no-dependency billing formatter test
-- `frontend/src/main.jsx`: React entrypoint
-- `frontend/src/styles.css`: dashboard styling
+- `frontend/src/main.jsx`: React entrypoint — imports `styles.css` first, then `styles/globals.css` second
+- `frontend/src/styles.css`: legacy dashboard styling (~9k lines)
+- `frontend/src/styles/globals.css`: override/animation layer — all `!important` theme overrides, all `@keyframes`, Conci AI brand classes, search bar styles, notification bell animations, theme toggle animations, micro-interactions, blue→red fixes
+- `frontend/src/components/KpiCard.jsx`: reusable KPI summary card (vertical layout, red left border, dark `#141414` bg)
+- `frontend/tailwind.config.js`: Tailwind config (added this session)
 - `frontend/vite.config.js`: Vite config
 
 ## 14. How to Run Backend
@@ -1099,7 +1154,7 @@ cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --host 127.0.0.1 --port 8000
+uvicorn app.main:app --host 0.0.0.0 --port 8001
 ```
 
 If dependencies are already installed:
@@ -1107,13 +1162,13 @@ If dependencies are already installed:
 ```bash
 cd backend
 source .venv/bin/activate
-uvicorn app.main:app --host 127.0.0.1 --port 8000
+uvicorn app.main:app --host 0.0.0.0 --port 8001
 ```
 
 Backend URL:
 
 ```text
-http://127.0.0.1:8000
+http://127.0.0.1:8001
 ```
 
 ## 15. How to Run Frontend
@@ -1129,16 +1184,16 @@ npm run dev
 Frontend URL:
 
 ```text
-http://127.0.0.1:5173
+http://127.0.0.1:5173 (or 5174 on relaunch)
 ```
 
-The frontend defaults to backend API base:
+The frontend reads `VITE_API_BASE_URL` from `frontend/.env`. The current configured value is:
 
 ```text
-http://127.0.0.1:8000
+VITE_API_BASE_URL=http://127.0.0.1:8001
 ```
 
-This can be overridden with `VITE_API_BASE_URL`. This variable is used in frontend code but is not currently documented in `README.md`.
+This must match the backend port. Default if not set was `http://127.0.0.1:8000` but the backend now runs on 8001.
 
 ## 16. How to Run Tests
 
@@ -1202,7 +1257,7 @@ Use this flow for the current main demo:
    ```bash
    cd backend
    source .venv/bin/activate
-   uvicorn app.main:app --host 127.0.0.1 --port 8000
+   uvicorn app.main:app --host 0.0.0.0 --port 8001
    ```
 
 2. Start frontend:
@@ -1215,7 +1270,7 @@ Use this flow for the current main demo:
 3. Open:
 
    ```text
-   http://127.0.0.1:5173
+   http://127.0.0.1:5173 (or 5174 on relaunch)
    ```
 
 4. Log in as admin:

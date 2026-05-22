@@ -1,0 +1,68 @@
+/** @type {import('tailwindcss').Config} */
+export default {
+  content: ["./index.html", "./src/**/*.{js,jsx,ts,tsx}"],
+  darkMode: ["selector", '[data-theme="dark"]'],
+  theme: {
+    extend: {
+      colors: {
+        "app-bg":        "#0A0A0A",
+        "card-bg":       "#141414",
+        "surface":       "#1A1A1A",
+        "border-subtle": "#1F1F1F",
+        "divider":       "#262626",
+        "text-primary":  "#FFFFFF",
+        "text-secondary":"#A1A1AA",
+        "text-muted":    "#71717A",
+        "accent":        "#EF4444",
+        "accent-hover":  "#DC2626",
+        "accent-soft":   "rgba(239, 68, 68, 0.12)",
+        "success":       "#22C55E",
+        "warning":       "#F59E0B",
+        "chart-1":       "#EF4444",
+        "chart-2":       "#404040",
+        "chart-3":       "#525252",
+        "chart-4":       "#737373",
+      },
+      fontFamily: {
+        sans: [
+          "Inter",
+          "ui-sans-serif",
+          "system-ui",
+          "-apple-system",
+          "BlinkMacSystemFont",
+          "Segoe UI",
+          "sans-serif",
+        ],
+      },
+      fontSize: {
+        "2xs":  ["11px", { lineHeight: "1.4" }],
+        xs:     ["12px", { lineHeight: "1.5" }],
+        sm:     ["13px", { lineHeight: "1.5" }],
+        base:   ["14px", { lineHeight: "1.6" }],
+        lg:     ["16px", { lineHeight: "1.5" }],
+        xl:     ["18px", { lineHeight: "1.4" }],
+        "2xl":  ["24px", { lineHeight: "1.3" }],
+        "3xl":  ["28px", { lineHeight: "1.2" }],
+        "4xl":  ["32px", { lineHeight: "1.1" }],
+        "5xl":  ["36px", { lineHeight: "1.1" }],
+      },
+      spacing: {
+        "4.5":  "18px",
+        "13":   "52px",
+        "15":   "60px",
+        "18":   "72px",
+      },
+      borderRadius: {
+        card:   "12px",
+        input:  "8px",
+        pill:   "999px",
+      },
+      boxShadow: {
+        card:   "0 1px 3px rgba(0,0,0,0.4), 0 1px 2px rgba(0,0,0,0.6)",
+        modal:  "0 20px 60px rgba(0,0,0,0.8)",
+        accent: "0 4px 14px rgba(239,68,68,0.4)",
+      },
+    },
+  },
+  plugins: [],
+};
