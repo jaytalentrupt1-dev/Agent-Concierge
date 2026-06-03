@@ -2,6 +2,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import KpiCard from "./components/KpiCard.jsx";
 import InsightCard from "./components/InsightCard.jsx";
 import CustomSelect from "./components/ui/CustomSelect.jsx";
+import AgentsDashboard from "./components/AgentsDashboard.jsx";
+import NotFound from "./components/NotFound.jsx";
+import ServerError from "./components/ServerError.jsx";
+import ErrorBoundary from "./components/ErrorBoundary.jsx";
+import { SkeletonAppShell, SkeletonPageContent } from "./components/ui/Skeleton.jsx";
+import FormError from "./components/ui/FormError.jsx";
+import { useFormValidation } from "./hooks/useFormValidation.js";
 import {
   AlertCircle,
   BarChart3,
@@ -47,6 +54,8 @@ import {
   MapPin,
   Maximize2,
   Minimize2,
+  Info,
+  AlertTriangle,
   MessageCircle,
   Phone,
   Paperclip,
@@ -494,7 +503,8 @@ const navItems = [
   { id: "travel", label: "Travel & Calendar", icon: Plane },
   { id: "expenses", label: "Expenses", icon: DollarSign },
   { id: "inventory", label: "Inventory", icon: Package },
-  { id: "reports", label: "Reports", icon: FileText }
+  { id: "reports", label: "Reports", icon: FileText },
+  { id: "agents", label: "Agents", icon: Bot }
 ];
 const topNavItems = [...navItems, { id: "settings", label: "Settings", icon: Settings }];
 
@@ -526,6 +536,19 @@ function formatDate(value) {
     hour: "numeric",
     minute: "2-digit"
   }).format(new Date(value));
+}
+
+function timeAgo(value) {
+  if (!value) return "";
+  const diffMs = Date.now() - new Date(value).getTime();
+  const mins = Math.floor(diffMs / 60_000);
+  if (mins < 2) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return `${days}d ago`;
+  return formatDate(value);
 }
 
 function formatDateOnly(value) {
@@ -1040,9 +1063,11 @@ function App() {
   const automationInputRef = useRef(null);
   const routingInputRef = useRef(null);
   const accountMenuRef = useRef(null);
+  const notificationWrapRef = useRef(null);
   const [theme, setTheme] = useState(savedTheme);
   const [currentUser, setCurrentUser] = useState(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
+  const [dataReady, setDataReady] = useState(false);
   const [dashboard, setDashboard] = useState(null);
   const [approvals, setApprovals] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
@@ -1069,6 +1094,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [routeLoading, setRouteLoading] = useState(false);
   const [error, setError] = useState("");
+  const [serverError, setServerError] = useState(false);
   const assistantStorageKey = dashboardAssistantSessionKey(currentUser);
   const [assistantMessages, setAssistantMessages] = useState([]);
   const [assistantDraft, setAssistantDraft] = useState("");
@@ -1190,6 +1216,7 @@ function App() {
     } else {
       setUsers([]);
     }
+    setDataReady(true);
     return {
       currentUser: effectiveUser,
       dashboard: nextDashboard,
@@ -1237,10 +1264,12 @@ function App() {
             setCurrentUser(null);
             return;
           }
+          if (err.status === 500) { setServerError(true); return; }
           setError(apiErrorMessage(err));
         });
       })
       .catch((err) => {
+        if (err.status === 500) { setServerError(true); return; }
         if (err.status !== 401) {
           setError(apiErrorMessage(err));
         }
@@ -1255,6 +1284,7 @@ function App() {
   async function handleLogin(email, password) {
     setLoading(true);
     setError("");
+    setServerError(false);
     try {
       const payload = await login(email, password);
       const requestedTab = tabFromPath();
@@ -1264,7 +1294,7 @@ function App() {
       navigateToTab(nextTab, { replace: true });
       await refresh(payload.user);
     } catch (err) {
-      setError(apiErrorMessage(err));
+      if (err?.status === 500) { setServerError(true); } else { setError(apiErrorMessage(err)); }
     } finally {
       setLoading(false);
     }
@@ -1384,6 +1414,39 @@ function App() {
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, [accountOpen]);
+
+  // Close notification panel when clicking outside or pressing Escape
+  useEffect(() => {
+    if (!notificationsOpen) return undefined;
+    function handlePointerDown(event) {
+      if (notificationWrapRef.current && !notificationWrapRef.current.contains(event.target)) {
+        setNotificationsOpen(false);
+      }
+    }
+    function handleKeyDown(event) {
+      if (event.key === "Escape") setNotificationsOpen(false);
+    }
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [notificationsOpen]);
+
+  // Poll for new notifications every 60 seconds while logged in
+  useEffect(() => {
+    if (!currentUser) return undefined;
+    const tick = async () => {
+      try {
+        const data = await getNotifications();
+        setNotifications(data.notifications || []);
+        setUnreadNotificationCount(data.unread_count || 0);
+      } catch (_) { /* silent — never crash the app */ }
+    };
+    const id = setInterval(tick, 60_000);
+    return () => clearInterval(id);
+  }, [currentUser]);
 
   function handleSearchSubmit(event) {
     event.preventDefault();
@@ -1515,11 +1578,22 @@ function App() {
   const canAccessActiveTab = canAccessTab(currentUser, activeTab);
 
   if (checkingAuth) {
-    return <div className="auth-shell"><p className="empty">Loading</p></div>;
+    return <SkeletonAppShell activeTab={activeTab} />;
   }
 
   if (!currentUser) {
     return <LoginScreen loading={loading} error={error} onLogin={handleLogin} />;
+  }
+
+  if (serverError) {
+    return (
+      <ServerError
+        onGoHome={() => {
+          setServerError(false);
+          setActiveTab("dashboard");
+        }}
+      />
+    );
   }
 
   return (
@@ -1541,7 +1615,7 @@ function App() {
             />
           </form>
           <div className="topbar-actions">
-            <div className="notification-wrap">
+            <div className="notification-wrap" ref={notificationWrapRef}>
               <div
                 aria-expanded={notificationsOpen}
                 aria-label="Open notifications"
@@ -1609,7 +1683,7 @@ function App() {
                       height: "8px",
                       background: "#EF4444",
                       borderRadius: "50%",
-                      border: "1.5px solid #0A0A0A",
+                      border: `1.5px solid ${theme === "dark" ? "#0A0A0A" : "#F4F4F5"}`,
                     }} />
                   )
                 )}
@@ -1631,7 +1705,10 @@ function App() {
                     </button>
                   </div>
                   {notifications.length === 0 ? (
-                    <p className="empty">No notifications yet.</p>
+                    <div className="notif-empty">
+                      <Bell size={28} strokeWidth={1.5} />
+                      <p>No notifications yet</p>
+                    </div>
                   ) : (
                     <div className="notification-list">
                       {notifications.map((item) => (
@@ -1641,9 +1718,20 @@ function App() {
                           onClick={() => handleNotificationClick(item)}
                           type="button"
                         >
-                          <strong>{item.title}</strong>
-                          <span>{item.message}</span>
-                          <small>{formatDate(item.created_at)}</small>
+                          <span className="notif-icon" data-type={item.type || "info"}>
+                            {item.type === "warning"
+                              ? <AlertTriangle size={15} />
+                              : item.type === "alert" || item.type === "error"
+                                ? <AlertCircle size={15} />
+                                : item.type === "success"
+                                  ? <CheckCircle2 size={15} />
+                                  : <Info size={15} />}
+                          </span>
+                          <span className="notif-body">
+                            <strong>{item.title}</strong>
+                            <span>{item.message}</span>
+                            <small>{timeAgo(item.created_at)}</small>
+                          </span>
                         </button>
                       ))}
                     </div>
@@ -1796,7 +1884,7 @@ function App() {
       </header>
 
       <main className={activeTab === "dashboard" ? "main dashboard-main" : "main"}>
-        {!["dashboard", "vendors", "inventory", "settings", "expenses", "approvals", "travel", "reports", "tasks"].includes(activeTab) && (
+        {!["dashboard", "vendors", "inventory", "settings", "expenses", "approvals", "travel", "reports", "tasks", "agents"].includes(activeTab) && (
           <div className="page-heading">
             <div className="page-title">
               <h1>{activeLabel}</h1>
@@ -1815,7 +1903,11 @@ function App() {
 
         {!canAccessActiveTab && <AccessDenied activeLabel={activeLabel} currentUser={currentUser} />}
 
-        {canAccessActiveTab && activeTab === "dashboard" && (
+        {canAccessActiveTab && !dataReady && (
+          <SkeletonPageContent activeTab={activeTab} />
+        )}
+
+        {canAccessActiveTab && dataReady && activeTab === "dashboard" && (
           <OperationsDashboard
             activeChatRequestRef={activeChatRequestRef}
             approvals={approvals}
@@ -1855,7 +1947,7 @@ function App() {
             setError={setError}
           />
         )}
-        {canAccessActiveTab && activeTab === "tasks" && (
+        {canAccessActiveTab && dataReady && activeTab === "tasks" && (
           <TasksView
             currentUser={currentUser}
             onChanged={refresh}
@@ -1865,7 +1957,7 @@ function App() {
             tasks={filteredTasks}
           />
         )}
-        {canAccessActiveTab && activeTab === "approvals" && (
+        {canAccessActiveTab && dataReady && activeTab === "approvals" && (
           <TicketsView
             currentUser={currentUser}
             onTicketSaved={(ticket) => {
@@ -1880,7 +1972,7 @@ function App() {
             tickets={filteredTickets}
           />
         )}
-        {canAccessActiveTab && activeTab === "vendors" && (
+        {canAccessActiveTab && dataReady && activeTab === "vendors" && (
           <VendorsView
             currentUser={currentUser}
             onChanged={refresh}
@@ -1888,7 +1980,7 @@ function App() {
             vendors={vendors}
           />
         )}
-        {canAccessActiveTab && activeTab === "travel" && (
+        {canAccessActiveTab && dataReady && activeTab === "travel" && (
           <TravelCalendarView
             calendarEvents={filteredCalendarEvents}
             currentUser={currentUser}
@@ -1912,7 +2004,7 @@ function App() {
             travelRecords={filteredTravelRecords}
           />
         )}
-        {canAccessActiveTab && activeTab === "expenses" && (
+        {canAccessActiveTab && dataReady && activeTab === "expenses" && (
           <ExpenseView
             currentUser={currentUser}
             expenses={filteredExpenses}
@@ -1927,7 +2019,7 @@ function App() {
             setError={setError}
           />
         )}
-        {canAccessActiveTab && activeTab === "inventory" && (
+        {canAccessActiveTab && dataReady && activeTab === "inventory" && (
           <InventoryView
             currentUser={currentUser}
             inventoryImports={inventoryImports}
@@ -1943,7 +2035,7 @@ function App() {
             setError={setError}
           />
         )}
-        {canAccessActiveTab && activeTab === "reports" && (
+        {canAccessActiveTab && dataReady && activeTab === "reports" && (
           <ReportsView
             currentUser={currentUser}
             onChanged={refresh}
@@ -1957,7 +2049,7 @@ function App() {
             setError={setError}
           />
         )}
-        {canAccessActiveTab && activeTab === "settings" && (
+        {canAccessActiveTab && dataReady && activeTab === "settings" && (
           <SettingsView
             currentUser={currentUser}
             health={health}
@@ -1965,6 +2057,16 @@ function App() {
             setError={setError}
             users={users}
           />
+        )}
+        {canAccessActiveTab && dataReady && activeTab === "agents" && (
+          <AgentsDashboard setError={setError} />
+        )}
+        {/* 404 — unknown tab (safety net; normally routing defaults to dashboard) */}
+        {canAccessActiveTab && dataReady && ![
+          "dashboard", "vendors", "inventory", "settings",
+          "expenses", "approvals", "travel", "reports", "tasks", "agents"
+        ].includes(activeTab) && (
+          <NotFound onGoHome={() => setActiveTab("dashboard")} />
         )}
       </main>
     </div>
@@ -1977,10 +2079,21 @@ function LoginScreen({ loading, error, onLogin }) {
   const [rememberMe, setRememberMe] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
+  const formRef = useRef(null);
+  const { errors: loginErrors, validate: validateLogin, clearError: clearLoginError } = useFormValidation({
+    email: { required: "Email is required", email: true },
+    password: { required: "Password is required", minLength: 6 }
+  });
 
   function submit(event) {
     event.preventDefault();
     setStatusMessage("");
+    const isValid = validateLogin({ email, password });
+    if (!isValid) {
+      formRef.current?.classList.add("form-shake");
+      setTimeout(() => formRef.current?.classList.remove("form-shake"), 400);
+      return;
+    }
     onLogin(email, password);
   }
 
@@ -2008,52 +2121,55 @@ function LoginScreen({ loading, error, onLogin }) {
               icon={Zap}
               title="Lightning Fast"
               detail="Automate repetitive tasks"
+              delay={0}
             />
             <LoginFeature
               icon={ShieldCheck}
               title="Enterprise Secure"
               detail="Your data is always safe"
+              delay={1}
             />
             <LoginFeature
               icon={BarChart3}
               title="Insight Driven"
               detail="Make better decisions"
+              delay={2}
             />
           </div>
           <div className="login-dot-pattern top" aria-hidden="true" />
-          <div className="login-dot-pattern bottom" aria-hidden="true" />
-          <div className="login-wave" aria-hidden="true" />
+          <div className="login-glow-bottom" aria-hidden="true" />
         </aside>
 
         <section className="login-card-wrap">
-          <form className="login-card" autoComplete="off" onSubmit={submit}>
+          <form className="login-form" autoComplete="off" onSubmit={submit} ref={formRef}>
             <div className="login-card-heading">
               <h2>Welcome back 👋</h2>
               <p>Sign in to your account</p>
             </div>
             {error && <div className="alert" role="alert">{error}</div>}
             {statusMessage && <div className="status-message" role="status">{statusMessage}</div>}
-            <label>
-              Email
-              <span className="login-input-shell">
-                <Mail size={20} aria-hidden="true" />
+            <div className="login-field-group">
+              <label className="login-field-label">Email</label>
+              <span className={`login-input-shell${loginErrors.email ? " input-error" : ""}`}>
+                <Mail size={16} aria-hidden="true" />
                 <input
                   autoComplete="off"
                   value={email}
-                  onChange={(event) => setEmail(event.target.value)}
+                  onChange={(event) => { setEmail(event.target.value); clearLoginError("email"); }}
                   placeholder="Enter your email"
                   type="email"
                 />
               </span>
-            </label>
-            <label>
-              Password
-              <span className="login-input-shell">
-                <Lock size={20} aria-hidden="true" />
+              <FormError message={loginErrors.email} />
+            </div>
+            <div className="login-field-group">
+              <label className="login-field-label">Password</label>
+              <span className={`login-input-shell${loginErrors.password ? " input-error" : ""}`}>
+                <Lock size={16} aria-hidden="true" />
                 <input
                   autoComplete="new-password"
                   value={password}
-                  onChange={(event) => setPassword(event.target.value)}
+                  onChange={(event) => { setPassword(event.target.value); clearLoginError("password"); }}
                   placeholder="Enter your password"
                   type={showPassword ? "text" : "password"}
                 />
@@ -2063,10 +2179,11 @@ function LoginScreen({ loading, error, onLogin }) {
                   title={showPassword ? "Hide password" : "Show password"}
                   type="button"
                 >
-                  {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
               </span>
-            </label>
+              <FormError message={loginErrors.password} />
+            </div>
             <div className="login-options">
               <label className="remember-option">
                 <input
@@ -2086,7 +2203,7 @@ function LoginScreen({ loading, error, onLogin }) {
             </div>
             <button className="login-submit" disabled={loading} type="submit">
               <span>{loading ? "Logging in" : "Log in"}</span>
-              <ArrowRight size={22} />
+              <ArrowRight size={18} />
             </button>
             <div className="login-divider">
               <span />
@@ -2111,11 +2228,11 @@ function LoginScreen({ loading, error, onLogin }) {
   );
 }
 
-function LoginFeature({ icon: Icon, title, detail }) {
+function LoginFeature({ icon: Icon, title, detail, delay = 0 }) {
   return (
-    <article className="login-feature">
-      <span>
-        <Icon size={24} />
+    <article className="login-feature" style={{ animationDelay: `${0.5 + delay * 0.1}s` }}>
+      <span className="login-feature-icon">
+        <Icon size={16} />
       </span>
       <div>
         <strong>{title}</strong>
@@ -2663,14 +2780,7 @@ function DashboardAIAssistantPanel({
 
   return (
     <aside className={expanded ? "dashboard-ai-panel expanded" : "dashboard-ai-panel"} aria-label="Conci AI">
-      <div style={{
-        display: "flex",
-        alignItems: "center",
-        gap: "10px",
-        padding: "16px",
-        borderBottom: "1px solid #1F1F1F",
-        background: "#141414",
-      }}>
+      <div className="conci-panel-header">
         <div className="conci-brand" style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1, minWidth: 0 }}>
           <div className="conci-icon" style={{
             width: "28px",
@@ -2788,16 +2898,7 @@ function DashboardAIAssistantPanel({
         )}
       </div>
 
-      <div className="dashboard-ai-suggestions" aria-label="Conci AI suggestions">
-        {suggestions.map((suggestion) => (
-          <button key={suggestion} onClick={() => sendMessage(suggestion)} type="button" disabled={sending || Boolean(editingMessage)}>
-            <span className="dashboard-ai-chip-icon">{dashboardAssistantSuggestionIcon(suggestion)}</span>
-            <span>{suggestion}</span>
-          </button>
-        ))}
-      </div>
-
-      {editingMessage && (
+{editingMessage && (
         <div className="dashboard-ai-edit-banner">
           <Pencil size={14} />
           <div>
@@ -2874,7 +2975,6 @@ function DashboardAIAssistantPanel({
           </button>
         )}
       </form>
-      <p className="dashboard-ai-footer">Conci AI can make mistakes. Verify important info.</p>
     </aside>
   );
 }
@@ -2897,8 +2997,18 @@ function DashboardAIMessageTable({ table }) {
   if (!table || !Array.isArray(table.columns) || !Array.isArray(table.rows) || table.rows.length === 0) return null;
   const columns = table.columns.map((column) => String(column || "").trim()).filter(Boolean);
   if (!columns.length) return null;
+  function handleTableWheel(e) {
+    if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+      const messages = e.currentTarget.closest(".dashboard-ai-messages");
+      if (messages) {
+        e.preventDefault();
+        messages.scrollBy({ top: e.deltaY });
+      }
+    }
+  }
+
   return (
-    <div className="dashboard-ai-table-wrap">
+    <div className="dashboard-ai-table-wrap" onWheel={handleTableWheel}>
       <table className="dashboard-ai-table">
         <thead>
           <tr>
@@ -3197,9 +3307,15 @@ function DashboardActionableInsights({ tickets = [], pendingApprovals = [], onNa
   );
 }
 
-const INVENTORY_DONUT_COLORS = ["#EF4444", "#525252", "#404040", "#2A2A2A"];
+function getInventoryDonutColors(isDark) {
+  return isDark
+    ? ["#EF4444", "#525252", "#404040", "#2A2A2A"]
+    : ["#EF4444", "#94A3B8", "#64748B", "#CBD5E1"];
+}
 
 function DashboardInventoryDonut({ inventoryItems = [] }) {
+  const isDark = document.documentElement.dataset.theme !== "light";
+  const donutColors = getInventoryDonutColors(isDark);
   const statusOrder = ["In Use", "In Stock", "In Repair", "Retired", "Extra", "Available / Other"];
   const counts = {};
   inventoryItems.forEach((item) => {
@@ -3207,7 +3323,7 @@ function DashboardInventoryDonut({ inventoryItems = [] }) {
     counts[status] = (counts[status] || 0) + 1;
   });
   const data = statusOrder
-    .map((status, index) => ({ name: status, value: counts[status] || 0, color: INVENTORY_DONUT_COLORS[index % INVENTORY_DONUT_COLORS.length] }))
+    .map((status, index) => ({ name: status, value: counts[status] || 0, color: donutColors[index % donutColors.length] }))
     .filter((d) => d.value > 0);
   const total = data.reduce((sum, d) => sum + d.value, 0);
   if (!total) return (
@@ -3871,6 +3987,7 @@ function DashboardCharts({ charts = [] }) {
 }
 
 function DashboardChartCard({ chart }) {
+  const isDark = document.documentElement.dataset.theme !== "light";
   const isTasksByStatus = dashboardIsTasksByStatusChart(chart);
   const isInventoryByStatus = dashboardIsInventoryByStatusChart(chart);
   const data = isTasksByStatus
@@ -3901,10 +4018,10 @@ function DashboardChartCard({ chart }) {
         <div className="dashboard-chart-wrap">
           <ResponsiveContainer width="100%" height="100%">
             {chart.chart_type === "pie"
-              ? <DashboardPieChart data={data} valueKind={valueKind} />
+              ? <DashboardPieChart data={data} valueKind={valueKind} isDark={isDark} />
               : chart.chart_type === "line"
-                ? <DashboardLineChart data={data} valueKind={valueKind} />
-                : <DashboardBarChart data={data} valueKind={valueKind} />}
+                ? <DashboardLineChart data={data} valueKind={valueKind} isDark={isDark} />
+                : <DashboardBarChart data={data} valueKind={valueKind} isDark={isDark} />}
           </ResponsiveContainer>
         </div>
       ) : (
@@ -4082,39 +4199,36 @@ function DashboardTooltip({ active, payload, label, valueKind }) {
   );
 }
 
-const TICKET_STATUS_BAR_COLORS = {
-  open: "#EF4444",
-  "in progress": "#525252",
-  pending: "#737373",
-  resolved: "#404040",
-  "waiting approval": "#404040",
-  closed: "#2A2A2A"
-};
-
-function getBarColor(name) {
-  return TICKET_STATUS_BAR_COLORS[String(name || "").toLowerCase()] || "#525252";
+function getTicketStatusBarColors(isDark) {
+  return isDark
+    ? { open: "#EF4444", "in progress": "#525252", pending: "#737373", resolved: "#404040", "waiting approval": "#404040", closed: "#2A2A2A" }
+    : { open: "#EF4444", "in progress": "#94A3B8", pending: "#CBD5E1", resolved: "#64748B", "waiting approval": "#F59E0B", closed: "#D1D5DB" };
 }
 
-function DashboardBarChart({ data, valueKind }) {
+function getBarColor(name, isDark) {
+  return getTicketStatusBarColors(isDark)[String(name || "").toLowerCase()] || (isDark ? "#525252" : "#94A3B8");
+}
+
+function DashboardBarChart({ data, valueKind, isDark }) {
   return (
     <RechartsBarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1F1F1F" />
+      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? "#1F1F1F" : "#E4E4E7"} />
       <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#71717A" }} interval={0} height={44} tickLine={false} axisLine={false} />
       <YAxis tick={{ fontSize: 11, fill: "#71717A" }} tickLine={false} axisLine={false} width={42} />
       <Tooltip content={(props) => <DashboardTooltip {...props} valueKind={valueKind} />} />
       <Bar dataKey="value" radius={[4, 4, 0, 0]}>
         {data.map((entry) => (
-          <Cell key={entry.name} fill={getBarColor(entry.name)} />
+          <Cell key={entry.name} fill={getBarColor(entry.name, isDark)} />
         ))}
       </Bar>
     </RechartsBarChart>
   );
 }
 
-function DashboardLineChart({ data, valueKind }) {
+function DashboardLineChart({ data, valueKind, isDark }) {
   return (
     <LineChart data={data} margin={{ top: 8, right: 10, left: 0, bottom: 0 }}>
-      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#2a2a2a" />
+      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? "#2a2a2a" : "#E4E4E7"} />
       <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#71717A" }} tickLine={false} axisLine={false} />
       <YAxis tick={{ fontSize: 11, fill: "#71717A" }} tickLine={false} axisLine={false} width={42} />
       <Tooltip content={(props) => <DashboardTooltip {...props} valueKind={valueKind} />} />
@@ -4633,6 +4747,7 @@ function TasksView({ currentUser, onChanged, onTaskDeleted, onTaskSaved, setErro
   const [form, setForm] = useState(emptyTaskForm);
   const [formErrors, setFormErrors] = useState({});
   const [saving, setSaving] = useState(false);
+  const taskFormRef = useRef(null);
   const activeFilterCount = Object.entries(taskFilters).filter(([key, value]) => {
     if (key === "dueDate") return Boolean(value);
     if (typeof value === "boolean") return value;
@@ -4856,7 +4971,11 @@ function TasksView({ currentUser, onChanged, onTaskDeleted, onTaskSaved, setErro
     event.preventDefault();
     setError("");
     setToastMessage("");
-    if (!validateTaskForm()) return;
+    if (!validateTaskForm()) {
+      taskFormRef.current?.classList.add("form-shake");
+      setTimeout(() => taskFormRef.current?.classList.remove("form-shake"), 400);
+      return;
+    }
     setSaving(true);
     try {
       const payload = {
@@ -5180,7 +5299,7 @@ function TasksView({ currentUser, onChanged, onTaskDeleted, onTaskSaved, setErro
       )}
       {formOpen && (
         <div className="modal-backdrop" role="presentation">
-          <form className="vendor-modal task-modal" onSubmit={submitTask} role="dialog" aria-modal="true" aria-label={editingTask ? "Edit task" : "Create task"}>
+          <form className="vendor-modal task-modal" onSubmit={submitTask} ref={taskFormRef} role="dialog" aria-modal="true" aria-label={editingTask ? "Edit task" : "Create task"}>
             <div className="section-heading">
               <h2>{editingTask ? "Edit Task" : "Create Task"}</h2>
               <button className="icon-only" onClick={closeTaskForm} type="button" aria-label="Close task form">
@@ -5211,7 +5330,7 @@ function TasksView({ currentUser, onChanged, onTaskDeleted, onTaskSaved, setErro
                   options={taskDepartmentOptions.map((o) => ({ value: o, label: o }))}
                   width="160px"
                 />
-                {formErrors.department && <span>{formErrors.department}</span>}
+                <FormError message={formErrors.department} />
               </label>
               <label className="vendor-field task-assignee-field">
                 Assigned To
@@ -5233,7 +5352,7 @@ function TasksView({ currentUser, onChanged, onTaskDeleted, onTaskSaved, setErro
                   width="160px"
                 />
                 {form.assigned_email && <small>{roleLabel(form.assigned_role)} · {form.assigned_email}</small>}
-                {formErrors.assigned_to && <span>{formErrors.assigned_to}</span>}
+                <FormError message={formErrors.assigned_to} />
               </label>
               <label className="vendor-field">
                 Assigned Role
@@ -5274,8 +5393,8 @@ function TasksView({ currentUser, onChanged, onTaskDeleted, onTaskSaved, setErro
               />
               <label className="vendor-field wide">
                 Description
-                <textarea onChange={(event) => updateTaskField("description", event.target.value)} rows={4} value={form.description} />
-                {formErrors.description && <span>{formErrors.description}</span>}
+                <textarea className={formErrors.description ? "input-error" : ""} onChange={(event) => updateTaskField("description", event.target.value)} rows={4} value={form.description} />
+                <FormError message={formErrors.description} />
               </label>
               <label className="vendor-field wide">
                 Notes
@@ -5328,70 +5447,70 @@ function TaskTable({
           <tr>
             <th>Task ID</th>
             <th>Title</th>
-            <th>Description</th>
             <th>Category</th>
-            <th>Department</th>
             <th>Assigned To</th>
-            <th>Assigned Role</th>
             <th>Priority</th>
             <th>Status</th>
             <th>Due Date</th>
-            <th>Created By</th>
-            <th>Created Date</th>
             <th>Actions</th>
           </tr>
         </thead>
         <tbody>
           {tasks.map((task) => {
             const canManage = canManageTask(currentUser, task);
+            const taskTitle = task.title || task.subject || task.task_name || task.name || "";
+            const statusKey = (task.status || "").toLowerCase().replace(/\s+/g, "-");
+            const priorityKey = (task.priority || "").toLowerCase();
             return (
               <tr key={task.id}>
-                <td><strong>{task.task_id}</strong></td>
-                <td className="ticket-title-cell"><strong>{task.title}</strong></td>
-                <td className="task-description-cell">{task.description}</td>
-                <td>{task.category}</td>
-                <td>{task.department}</td>
-                <td>{task.assigned_to}</td>
-                <td>{roleLabel(task.assigned_role)}</td>
-                <td>{task.priority}</td>
-                <td>{task.status}</td>
-                <td>{formatCalendarDate(task.due_date)}</td>
-                <td className="ticket-person-cell">
-                  <strong>{task.created_by_name || "Agent Concierge"}</strong>
-                  <span>{task.created_by_email || "system@agent.local"}</span>
+                <td className="task-id-cell">{task.task_id}</td>
+                <td className="task-title-cell">
+                  <div className="task-title-text">{taskTitle || task.description || "—"}</div>
+                  {taskTitle && task.description && (
+                    <div className="task-desc-text">{task.description}</div>
+                  )}
                 </td>
-                <td>{formatCalendarDate(task.created_at)}</td>
+                <td className="task-nowrap">{task.category}</td>
+                <td className="task-assignee-cell">
+                  <div className="task-assignee-name">{task.assigned_to || "—"}</div>
+                  {task.assigned_role && (
+                    <div className="task-assignee-role">{roleLabel(task.assigned_role)}</div>
+                  )}
+                </td>
+                <td><span className={`task-priority-text priority-${priorityKey}`}>{task.priority}</span></td>
+                <td><span className={`task-status-badge status-${statusKey}`}>{task.status}</span></td>
+                <td className="task-date-cell">{formatCalendarDate(task.due_date)}</td>
                 <td>
                   <div className="table-actions task-actions">
                     <button
-                      className="table-action-button vendor-row-icon-button task-action-icon action-edit"
+                      className="table-action-button task-action-icon action-edit"
                       disabled={!canManage}
                       onClick={() => onEdit(task)}
                       type="button"
                       aria-label="Edit task"
                       title={canManage ? "Edit task" : "Requires task manager access"}
                     >
-                      <Pencil size={16} />
+                      <Pencil size={14} />
                     </button>
                     <button
-                      className="table-action-button vendor-row-icon-button task-action-icon action-status"
+                      className="table-action-button task-action-icon action-status"
                       disabled={!canManage}
                       onClick={() => onStatus(task)}
                       type="button"
                       aria-label="Change task status"
                       title={canManage ? "Change task status" : "Requires task manager access"}
                     >
-                      <RefreshCw size={16} />
+                      <RefreshCw size={14} />
                     </button>
                     <button
-                      className="table-action-button vendor-row-icon-button task-action-icon action-close"
+                      className="table-action-button task-action-icon action-close"
                       disabled={!canManage}
                       onClick={() => onDelete(task)}
                       type="button"
                       aria-label="Delete task"
                       title={canManage ? "Delete task" : "Requires task manager access"}
                     >
-                      <Trash2 size={16} />
+                      <Trash2 size={14} />
                     </button>
                   </div>
                 </td>
@@ -5543,6 +5662,7 @@ function TicketsView({ currentUser, onTicketSaved, onUpdated, setError, tickets 
   const [form, setForm] = useState(emptyTicketForm);
   const [formErrors, setFormErrors] = useState({});
   const [saving, setSaving] = useState(false);
+  const ticketFormRef = useRef(null);
   const activeFilterCount = Object.values(ticketFilters).filter((value) => value !== "All").length;
   const filteredTickets = useMemo(() => {
     return tickets.filter((ticket) => {
@@ -5680,7 +5800,11 @@ function TicketsView({ currentUser, onTicketSaved, onUpdated, setError, tickets 
     event.preventDefault();
     setError("");
     setToastMessage("");
-    if (!validateTicketForm()) return;
+    if (!validateTicketForm()) {
+      ticketFormRef.current?.classList.add("form-shake");
+      setTimeout(() => ticketFormRef.current?.classList.remove("form-shake"), 400);
+      return;
+    }
     setSaving(true);
     try {
       const payload = {
@@ -5931,7 +6055,7 @@ function TicketsView({ currentUser, onTicketSaved, onUpdated, setError, tickets 
       )}
       {formOpen && (
         <div className="modal-backdrop" role="presentation">
-          <form className="vendor-modal ticket-modal" onSubmit={submitTicket} role="dialog" aria-modal="true" aria-label="Create ticket">
+          <form className="vendor-modal ticket-modal" onSubmit={submitTicket} ref={ticketFormRef} role="dialog" aria-modal="true" aria-label="Create ticket">
             <div className="section-heading">
               <h2>{editingTicket ? "Edit Ticket" : "Create Ticket"}</h2>
               <button className="icon-only" onClick={closeTicketForm} type="button" aria-label="Close ticket form">
@@ -5956,7 +6080,7 @@ function TicketsView({ currentUser, onTicketSaved, onUpdated, setError, tickets 
                   options={categoryList.map((o) => ({ value: o, label: o }))}
                   width="160px"
                 />
-                {formErrors.category && <span>{formErrors.category}</span>}
+                <FormError message={formErrors.category} />
               </label>
               <label className="vendor-field">
                 Branch
@@ -6004,11 +6128,12 @@ function TicketsView({ currentUser, onTicketSaved, onUpdated, setError, tickets 
               <label className="vendor-field wide">
                 Description
                 <textarea
+                  className={formErrors.description ? "input-error" : ""}
                   onChange={(event) => updateTicketField("description", event.target.value)}
                   rows={4}
                   value={form.description}
                 />
-                {formErrors.description && <span>{formErrors.description}</span>}
+                <FormError message={formErrors.description} />
               </label>
               <label className="ticket-checkbox wide">
                 <input
@@ -6065,16 +6190,17 @@ function TicketTable({
           <tr>
             <th>Ticket ID</th>
             <th>Title</th>
+            <th>Description</th>
             <th>Type</th>
             <th>Category</th>
             <th>Branch</th>
             <th>Priority</th>
             <th>Status</th>
-            <th>Requested by</th>
-            <th>Assigned to / Assigned role</th>
-            <th>Created date</th>
-            <th>Due date</th>
-            <th>Approval required</th>
+            <th>Requested By</th>
+            <th>Assigned To</th>
+            <th>Created Date</th>
+            <th>Due Date</th>
+            <th>Approval</th>
             <th>Actions</th>
           </tr>
         </thead>
@@ -6082,18 +6208,20 @@ function TicketTable({
           {tickets.map((ticket) => {
             const canManage = canManageTicket(currentUser, ticket);
             const canChangeStatus = canUpdateTicketStatus(currentUser, ticket);
+            const statusKey = (ticket.status || "").toLowerCase().replace(/\s+/g, "-");
+            const priorityKey = (ticket.priority || "").toLowerCase();
             return (
               <tr key={ticket.id}>
-                <td><strong>{ticket.ticket_id}</strong></td>
+                <td className="ticket-id-cell"><span>{ticket.ticket_id}</span></td>
                 <td className="ticket-title-cell">
                   <strong>{ticket.title}</strong>
-                  {ticket.description && <p>{ticket.description}</p>}
                 </td>
-                <td>{ticket.ticket_type}</td>
+                <td className="ticket-desc-cell">{ticket.description || "—"}</td>
+                <td className="ticket-nowrap">{ticket.ticket_type}</td>
                 <td>{ticket.category}</td>
-                <td>{ticket.branch || "Pune"}</td>
-                <td>{ticket.priority}</td>
-                <td>{ticket.status}</td>
+                <td className="ticket-nowrap">{ticket.branch || "Pune"}</td>
+                <td><span className={`ticket-priority-text priority-${priorityKey}`}>{ticket.priority}</span></td>
+                <td><span className={`ticket-status-badge status-${statusKey}`}>{ticket.status}</span></td>
                 <td className="ticket-person-cell">
                   <strong>{ticket.requester_name}</strong>
                   <span>{ticket.requester_email}</span>
@@ -6102,9 +6230,9 @@ function TicketTable({
                   <strong>{ticketAssignedLabel(ticket)}</strong>
                   <span>{roleLabel(ticket.assigned_role)}</span>
                 </td>
-                <td>{formatCalendarDate(ticket.created_at)}</td>
-                <td>{formatCalendarDate(ticket.due_date)}</td>
-                <td>{ticket.approval_required ? "Yes" : "No"}</td>
+                <td className="ticket-date-cell">{formatCalendarDate(ticket.created_at)}</td>
+                <td className="ticket-date-cell">{formatCalendarDate(ticket.due_date)}</td>
+                <td className="ticket-nowrap">{ticket.approval_required ? "Yes" : "No"}</td>
                 <td>
                   <div className="table-actions ticket-actions">
                     <button
@@ -6382,6 +6510,7 @@ function VendorsView({ currentUser, onChanged, setError, vendors }) {
   const [vendorSearch, setVendorSearch] = useState("");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const vendorFilterRef = useRef(null);
+  const vendorFormRef = useRef(null);
   const [vendorPage, setVendorPage] = useState(1);
   const [vendorFilters, setVendorFilters] = useState({
     status: "All",
@@ -6682,7 +6811,11 @@ function VendorsView({ currentUser, onChanged, setError, vendors }) {
     setError("");
     setToastMessage("");
     const validated = validateVendorForm();
-    if (!validated) return;
+    if (!validated) {
+      vendorFormRef.current?.classList.add("form-shake");
+      setTimeout(() => vendorFormRef.current?.classList.remove("form-shake"), 400);
+      return;
+    }
     setSaving(true);
     try {
       const payload = Object.fromEntries(
@@ -6896,7 +7029,7 @@ function VendorsView({ currentUser, onChanged, setError, vendors }) {
       )}
       {formOpen && (
         <div className="modal-backdrop" role="presentation">
-          <form className="vendor-modal" onSubmit={submitVendor} role="dialog" aria-modal="true" aria-label="Add vendor">
+          <form className="vendor-modal" onSubmit={submitVendor} ref={vendorFormRef} role="dialog" aria-modal="true" aria-label="Add vendor">
             <div className="section-heading">
               <h2>{editingVendor ? "Edit Vendor" : "Add Vendor"}</h2>
               <button className="icon-only" onClick={closeForm} type="button" aria-label="Close add vendor form">
@@ -6932,11 +7065,12 @@ function VendorsView({ currentUser, onChanged, setError, vendors }) {
               <label className="vendor-field wide">
                 Office address
                 <textarea
+                  className={formErrors.office_address ? "input-error" : ""}
                   onChange={(event) => updateField("office_address", event.target.value)}
                   rows={3}
                   value={form.office_address}
                 />
-                {formErrors.office_address && <span>{formErrors.office_address}</span>}
+                <FormError message={formErrors.office_address} />
               </label>
               <label className="vendor-field">
                 Branch
@@ -6956,7 +7090,7 @@ function VendorsView({ currentUser, onChanged, setError, vendors }) {
                   placeholder="Choose"
                   width="160px"
                 />
-                {formErrors.service_provided && <span>{formErrors.service_provided}</span>}
+                <FormError message={formErrors.service_provided} />
               </label>
               <VendorField
                 error={formErrors.start_date}
@@ -6991,7 +7125,7 @@ function VendorsView({ currentUser, onChanged, setError, vendors }) {
                   options={billingCycleOptions.map((o) => ({ value: o, label: o }))}
                   width="160px"
                 />
-                {formErrors.billing_cycle && <span>{formErrors.billing_cycle}</span>}
+                <FormError message={formErrors.billing_cycle} />
               </label>
             </div>
             <div className="modal-actions">
@@ -7012,6 +7146,7 @@ function VendorField({ error, helper, inputMode, label, maxLength, min, onChange
     <label className="vendor-field">
       {label}
       <input
+        className={error ? "input-error" : ""}
         inputMode={inputMode}
         maxLength={maxLength}
         min={min}
@@ -7020,7 +7155,7 @@ function VendorField({ error, helper, inputMode, label, maxLength, min, onChange
         type={type}
         value={value}
       />
-      {error && <span>{error}</span>}
+      <FormError message={error} />
       {!error && helper && <small>{helper}</small>}
     </label>
   );
@@ -7241,6 +7376,7 @@ function VendorTable({
 function InventoryView({ currentUser, inventoryImports, inventoryItems, onChanged, onItemSaved, setError }) {
   const canManageInventory = ["admin", "it_manager"].includes(currentUser.role);
   const fileInputRef = useRef(null);
+  const inventoryFormRef = useRef(null);
   const [inventorySearch, setInventorySearch] = useState("");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [inventoryFilters, setInventoryFilters] = useState({
@@ -7578,7 +7714,11 @@ function InventoryView({ currentUser, inventoryImports, inventoryItems, onChange
     setToastMessage("");
     const errors = validateInventoryForm();
     setFormErrors(errors);
-    if (Object.keys(errors).length) return;
+    if (Object.keys(errors).length) {
+      inventoryFormRef.current?.classList.add("form-shake");
+      setTimeout(() => inventoryFormRef.current?.classList.remove("form-shake"), 400);
+      return;
+    }
     setSaving(true);
     try {
       const payload = inventoryPayloadFromForm(form);
@@ -7943,7 +8083,7 @@ function InventoryView({ currentUser, inventoryImports, inventoryItems, onChange
       )}
       {formOpen && (
         <div className="modal-backdrop" role="presentation">
-          <form className="vendor-modal inventory-modal" onSubmit={submitInventoryItem} role="dialog" aria-modal="true" aria-label={editingItem ? "Edit inventory item" : "Add inventory item"}>
+          <form className="vendor-modal inventory-modal" onSubmit={submitInventoryItem} ref={inventoryFormRef} role="dialog" aria-modal="true" aria-label={editingItem ? "Edit inventory item" : "Add inventory item"}>
             <div className="section-heading">
               <h2>{editingItem ? "Edit Inventory Item" : "Add Inventory Item"}</h2>
               <button className="icon-only" onClick={closeInventoryForm} type="button" aria-label="Close inventory form">
@@ -8152,7 +8292,7 @@ function InventoryFormFields({ form, formErrors, onChange }) {
           options={branchOptions.map((o) => ({ value: o, label: o }))}
           width="160px"
         />
-        {formErrors.branch && <span>{formErrors.branch}</span>}
+        <FormError message={formErrors.branch} />
       </label>
       <label className="vendor-field">
         Status
@@ -8162,12 +8302,12 @@ function InventoryFormFields({ form, formErrors, onChange }) {
           options={inventoryStatusOptions.map((o) => ({ value: o, label: o }))}
           width="160px"
         />
-        {formErrors.status && <span>{formErrors.status}</span>}
+        <FormError message={formErrors.status} />
       </label>
       <label className="vendor-field wide">
         Notes
         <textarea rows={3} value={form.notes} onChange={(event) => onChange("notes", event.target.value)} />
-        {formErrors.notes && <span>{formErrors.notes}</span>}
+        <FormError message={formErrors.notes} />
       </label>
     </div>
   );
@@ -8776,7 +8916,6 @@ function TravelCalendarView({
           <span className="vendor-directory-icon"><Plane size={20} /></span>
           <div>
             <h1>Travel & Calendar</h1>
-            <p>Internal travel records and calendar coordination, ready for future Google API sync.</p>
           </div>
         </div>
         <div className="ticket-action-row travel-action-row">
@@ -9259,6 +9398,7 @@ function ExpenseView({ currentUser, expenses, onChanged, onExpenseSaved, setErro
   const [expenseMessage, setExpenseMessage] = useState(null);
   const [saving, setSaving] = useState(false);
   const expenseImportFileInputRef = useRef(null);
+  const expenseFormRef = useRef(null);
   const activeFilterCount = Object.values(expenseFilters).filter((value) => value !== "All").length;
   const canCreateExpense = ["admin", "finance_manager", "employee", "it_manager"].includes(currentUser.role);
   const canImportExpenses = ["admin", "finance_manager"].includes(currentUser.role);
@@ -9373,7 +9513,11 @@ function ExpenseView({ currentUser, expenses, onChanged, onExpenseSaved, setErro
     event.preventDefault();
     setError("");
     setToastMessage("");
-    if (!validateExpenseForm()) return;
+    if (!validateExpenseForm()) {
+      expenseFormRef.current?.classList.add("form-shake");
+      setTimeout(() => expenseFormRef.current?.classList.remove("form-shake"), 400);
+      return;
+    }
     setSaving(true);
     try {
       const payload = {
@@ -9745,7 +9889,7 @@ function ExpenseView({ currentUser, expenses, onChanged, onExpenseSaved, setErro
 
       {formOpen && (
         <div className="modal-backdrop" role="presentation">
-          <form className="vendor-modal expense-modal" onSubmit={submitExpense} role="dialog" aria-modal="true" aria-label="Add expense">
+          <form className="vendor-modal expense-modal" onSubmit={submitExpense} ref={expenseFormRef} role="dialog" aria-modal="true" aria-label="Add expense">
             <div className="section-heading">
               <h2>{editingExpense ? "Edit Expense" : "Add Expense"}</h2>
               <button className="icon-only" onClick={closeExpenseForm} type="button" aria-label="Close expense form">
@@ -9757,8 +9901,8 @@ function ExpenseView({ currentUser, expenses, onChanged, onExpenseSaved, setErro
               <VendorField error={formErrors.employee_email} label="Employee email" onChange={(value) => updateExpenseField("employee_email", value)} type="email" value={form.employee_email} />
               <label className="vendor-field">
                 Department
-                <input onChange={(event) => updateExpenseField("department", event.target.value)} value={form.department} />
-                {formErrors.department && <span>{formErrors.department}</span>}
+                <input className={formErrors.department ? "input-error" : ""} onChange={(event) => updateExpenseField("department", event.target.value)} value={form.department} />
+                <FormError message={formErrors.department} />
               </label>
               <label className="vendor-field">
                 Branch
@@ -11169,6 +11313,7 @@ function SettingsView({ currentUser, health, onChanged, setError, users }) {
   const [form, setForm] = useState({ name: "", email: "", password: "", confirmPassword: "", role: "employee" });
   const [formErrors, setFormErrors] = useState({});
   const [saving, setSaving] = useState(false);
+  const userFormRef = useRef(null);
   const [userSearch, setUserSearch] = useState("");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [userFilters, setUserFilters] = useState({ role: "All" });
@@ -11279,7 +11424,12 @@ function SettingsView({ currentUser, health, onChanged, setError, users }) {
 
   async function submitCreate(event) {
     event.preventDefault();
-    if (!isAdmin || !validateCreateUser()) return;
+    if (!isAdmin) return;
+    if (!validateCreateUser()) {
+      userFormRef.current?.classList.add("form-shake");
+      setTimeout(() => userFormRef.current?.classList.remove("form-shake"), 400);
+      return;
+    }
     setError("");
     setSaving(true);
     try {
@@ -11436,7 +11586,7 @@ function SettingsView({ currentUser, health, onChanged, setError, users }) {
       )}
       {createOpen && (
         <div className="modal-backdrop" role="presentation">
-          <form className="vendor-modal user-create-modal" onSubmit={submitCreate} role="dialog" aria-modal="true" aria-label="Create user">
+          <form className="vendor-modal user-create-modal" onSubmit={submitCreate} ref={userFormRef} role="dialog" aria-modal="true" aria-label="Create user">
             <div className="section-heading">
               <h2>Create User</h2>
               <button className="icon-only" onClick={closeCreateUser} type="button" aria-label="Close create user form">
@@ -11446,23 +11596,23 @@ function SettingsView({ currentUser, health, onChanged, setError, users }) {
             <div className="vendor-form-grid">
               <label className="vendor-field">
                 Name
-                <input value={form.name} onChange={(event) => updateCreateField("name", event.target.value)} />
-                {formErrors.name && <span>{formErrors.name}</span>}
+                <input className={formErrors.name ? "input-error" : ""} value={form.name} onChange={(event) => updateCreateField("name", event.target.value)} />
+                <FormError message={formErrors.name} />
               </label>
               <label className="vendor-field">
                 Email
-                <input type="email" value={form.email} onChange={(event) => updateCreateField("email", event.target.value)} />
-                {formErrors.email && <span>{formErrors.email}</span>}
+                <input className={formErrors.email ? "input-error" : ""} type="email" value={form.email} onChange={(event) => updateCreateField("email", event.target.value)} />
+                <FormError message={formErrors.email} />
               </label>
               <label className="vendor-field">
                 Password
-                <input type="password" value={form.password} onChange={(event) => updateCreateField("password", event.target.value)} />
-                {formErrors.password && <span>{formErrors.password}</span>}
+                <input className={formErrors.password ? "input-error" : ""} type="password" value={form.password} onChange={(event) => updateCreateField("password", event.target.value)} />
+                <FormError message={formErrors.password} />
               </label>
               <label className="vendor-field">
                 Confirm password
-                <input type="password" value={form.confirmPassword} onChange={(event) => updateCreateField("confirmPassword", event.target.value)} />
-                {formErrors.confirmPassword && <span>{formErrors.confirmPassword}</span>}
+                <input className={formErrors.confirmPassword ? "input-error" : ""} type="password" value={form.confirmPassword} onChange={(event) => updateCreateField("confirmPassword", event.target.value)} />
+                <FormError message={formErrors.confirmPassword} />
               </label>
               <label className="vendor-field wide">
                 Role
@@ -11472,7 +11622,7 @@ function SettingsView({ currentUser, health, onChanged, setError, users }) {
                   options={roleOptions.map((r) => ({ value: r, label: roleLabel(r) }))}
                   width="160px"
                 />
-                {formErrors.role && <span>{formErrors.role}</span>}
+                <FormError message={formErrors.role} />
               </label>
             </div>
             <div className="vendor-modal-actions">

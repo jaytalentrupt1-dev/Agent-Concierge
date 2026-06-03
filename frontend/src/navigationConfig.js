@@ -1,5 +1,5 @@
 export const accessByRole = {
-  admin: ["dashboard", "vendors", "tasks", "approvals", "travel", "expenses", "inventory", "reports", "settings"],
+  admin: ["dashboard", "vendors", "tasks", "approvals", "travel", "expenses", "inventory", "reports", "agents", "settings"],
   it_manager: ["dashboard", "inventory", "tasks", "approvals", "reports", "settings"],
   finance_manager: ["dashboard", "travel", "expenses", "reports", "tasks", "approvals", "vendors", "inventory", "settings"],
   employee: ["dashboard", "approvals", "settings", "tasks"]
@@ -14,6 +14,7 @@ export const tabRoutes = {
   expenses: "/expenses",
   inventory: "/inventory",
   reports: "/reports",
+  agents: "/agents",
   settings: "/settings"
 };
 

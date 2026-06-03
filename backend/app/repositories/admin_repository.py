@@ -255,6 +255,15 @@ class AdminRepository:
                     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS agent_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent_name TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    data_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS expenses (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     expense_id TEXT NOT NULL UNIQUE,
@@ -3231,6 +3240,65 @@ class AdminRepository:
                 (_json(sorted(read_user_ids)), notification_id),
             )
         return self.get_notification(notification_id)
+
+    # ── Agent Logs ────────────────────────────────────────────────────────────
+
+    def create_agent_log(
+        self,
+        agent_name: str,
+        status: str,
+        message: str,
+        data: dict | None = None,
+    ) -> dict:
+        """Persist a single agent execution record."""
+        now = utc_now()
+        with self.db.connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO agent_logs (agent_name, status, message, data_json, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (agent_name, status, message, _json(data or {}), now),
+            )
+            row_id = int(cursor.lastrowid)
+        return {
+            "id": row_id,
+            "agent_name": agent_name,
+            "status": status,
+            "message": message,
+            "data": data or {},
+            "created_at": now,
+        }
+
+    def get_agent_logs(
+        self,
+        agent_name: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Return agent log rows, newest first."""
+        with self.db.connection() as conn:
+            if agent_name:
+                rows = conn.execute(
+                    "SELECT * FROM agent_logs WHERE agent_name = ? ORDER BY created_at DESC, id DESC LIMIT ?",
+                    (agent_name, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM agent_logs ORDER BY created_at DESC, id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+        result = []
+        for row in rows:
+            data_val = row["data_json"] if "data_json" in row.keys() else "{}"
+            result.append({
+                "id": row["id"],
+                "agent_name": row["agent_name"],
+                "status": row["status"],
+                "message": row["message"],
+                "data": _loads(data_val, {}),
+                "created_at": row["created_at"],
+            })
+        return result
 
     def _next_task_id(self) -> str:
         with self.db.connection() as conn:

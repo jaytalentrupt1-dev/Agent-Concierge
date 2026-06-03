@@ -406,6 +406,15 @@ class ConciAgentIntentService:
         if not normalized:
             return IntentResult(intent="unsupported", confidence=0.0)
 
+        # Check for structured "Field: Value" ticket creation BEFORE normalization strips colons.
+        # This must run before the openai_intent override so a bad external classifier cannot
+        # overrule an unambiguous structured creation form.
+        if cls._has_structured_ticket_fields(message):
+            # Extract field values from the original (colon-intact) message.
+            structured_entities = cls._extract_structured_ticket_entities(message)
+            merged = {**structured_entities, **(openai_entities or {})}
+            return cls._result_for("create_ticket", 0.97, normalized, merged)
+
         openai_intent = cls._normalize_intent_id(openai_intent or "")
         if openai_intent in cls.INTENT_DEFINITIONS:
             return cls._result_for(openai_intent, 0.9, normalized, openai_entities or {})
@@ -440,6 +449,11 @@ class ConciAgentIntentService:
             return "utility_date"
         if "what time" in text or "current time" in text or "time now" in text:
             return "utility_time"
+        # Structured "Field: Value" ticket creation (e.g. "Title: X\nPriority: High")
+        # Must run before any ticket branch to avoid misclassifying as my_tickets/open_tickets.
+        if cls._has_structured_ticket_fields(text):
+            return "create_ticket"
+
         create_terms_without_open = {"create", "raise", "add", "make", "new"}
         if "ticket" in tokens or "tickets" in tokens:
             if tokens.intersection(cls.UPDATE_TERMS) and re.search(r"\b(?:it|adm)-\d+\b", text, re.IGNORECASE):
@@ -505,6 +519,48 @@ class ConciAgentIntentService:
         if "file" in tokens or "attachment" in tokens or "attached" in tokens:
             return "file_reading"
         return ""
+
+    @staticmethod
+    def _has_structured_ticket_fields(text: str) -> bool:
+        """Return True when the message looks like a structured ticket-creation form.
+
+        Matches patterns like:
+            title: forgotten password
+            priority: high
+        At least 3 of the 5 creation fields must appear as ``key:`` labels for
+        the message to be treated as a create-ticket request.
+        """
+        field_patterns = [
+            r"\bticket[_\s-]*type\s*:",
+            r"\btype\s*:",
+            r"\bcategory\s*:",
+            r"\btitle\s*:",
+            r"\bdescription\s*:",
+            r"\bpriority\s*:",
+        ]
+        matched = sum(1 for pattern in field_patterns if re.search(pattern, text, re.IGNORECASE))
+        return matched >= 3
+
+    @staticmethod
+    def _extract_structured_ticket_entities(raw_text: str) -> dict[str, Any]:
+        """Parse 'Field: Value' ticket fields from the original (un-normalized) message."""
+        entities: dict[str, Any] = {}
+        patterns = {
+            "ticket_type": r"(?:ticket[_\s-]*type|type)\s*:\s*([^\n,;]+)",
+            "category":    r"category\s*:\s*([^\n,;]+)",
+            "title":       r"title\s*:\s*([^\n,;]+)",
+            "description": r"description\s*:\s*(.+?)(?=\s*,?\s*(?:ticket[_\s-]*type|type|category|title|priority)\s*:|\n|$)",
+            "priority":    r"priority\s*:\s*([^\n,;]+)",
+        }
+        for key, pattern in patterns.items():
+            m = re.search(pattern, raw_text, re.IGNORECASE)
+            if m:
+                value = m.group(1).strip().rstrip(".,;")
+                # Only first line for description too, to avoid bleeding into next field
+                value = value.split("\n")[0].strip()
+                if value:
+                    entities[key] = value
+        return entities
 
     @staticmethod
     def _phrase_score(text: str, phrase: str) -> float:
@@ -579,6 +635,24 @@ class ConciAgentIntentService:
             entities["date_range"] = "last_month"
         elif "this month" in normalized_text or "current month" in normalized_text:
             entities["date_range"] = "this_month"
+
+        # Extract structured ticket fields if present (e.g. "Title: X\nPriority: High")
+        ticket_field_map = {
+            "ticket_type": r"(?:ticket[_\s-]*type|type)\s*:\s*(.+)",
+            "category":    r"category\s*:\s*(.+)",
+            "title":       r"title\s*:\s*(.+)",
+            "description": r"description\s*:\s*(.+)",
+            "priority":    r"priority\s*:\s*(.+)",
+        }
+        for entity_key, pattern in ticket_field_map.items():
+            m = re.search(pattern, normalized_text, re.IGNORECASE)
+            if m:
+                value = m.group(1).strip().rstrip(".,;")
+                # Grab only the first line so multi-line descriptions don't leak into other fields
+                value = value.split("\n")[0].strip()
+                if value:
+                    entities[entity_key] = value
+
         return entities
 
     @classmethod

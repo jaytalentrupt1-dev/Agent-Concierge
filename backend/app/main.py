@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 
 from app.core.config import settings
 from app.data.mock_data import get_mock_context
@@ -63,6 +63,7 @@ from app.services.approval_rules import ApprovalRulesService
 from app.services.approval_service import ApprovalService
 from app.services.audit_service import AuditService
 from app.services.communication_service import CommunicationService
+from app.services.action_handler import ActionHandler
 from app.services.conci_agent import ConciAgentIntentService
 from app.services.deepinfra_service import get_deepinfra_client
 from app.services.auth_service import (
@@ -128,6 +129,21 @@ def create_app(database_path: str | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
+    # ── Custom error handlers ──────────────────────────────────────────────────
+    @app.exception_handler(404)
+    async def not_found_handler(request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "Resource not found"},
+        )
+
+    @app.exception_handler(500)
+    async def server_error_handler(request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error"},
+        )
+
     app.state.repository = repository
     app.state.workflow = workflow
     app.state.approvals = approvals
@@ -135,6 +151,16 @@ def create_app(database_path: str | None = None) -> FastAPI:
     app.state.auth = auth
     app.state.communications = communications
     app.state.approval_rules = rules
+
+    from app.services.scheduler import start_scheduler, stop_scheduler
+
+    @app.on_event("startup")
+    def _start_scheduler() -> None:
+        start_scheduler(str(settings.database_path))
+
+    @app.on_event("shutdown")
+    def _stop_scheduler() -> None:
+        stop_scheduler()
 
     def current_token(authorization: str | None = Header(default=None)) -> str:
         if not authorization or not authorization.startswith("Bearer "):
@@ -645,6 +671,16 @@ def create_app(database_path: str | None = None) -> FastAPI:
             "Ticket status changed",
             f"Ticket status changed: {ticket['title']} is now {ticket['status']}",
         )
+
+    # ── Telegram helper ──────────────────────────────────────────────────────
+    # Wraps send_telegram_sync so that a Telegram failure never breaks the
+    # main API operation.  Uses HTML parse mode (configured in telegram_service).
+    def _tg_notify(text: str) -> None:
+        try:
+            from app.services.telegram_service import send_telegram_sync
+            send_telegram_sync(text)
+        except Exception:
+            pass
 
     def visible_approvals_for(user: dict) -> list[dict]:
         approvals_for_user = repository.list_approvals()
@@ -2085,8 +2121,66 @@ def create_app(database_path: str | None = None) -> FastAPI:
         normalized = cleaned.lower()
         return replacements.get(normalized, cleaned[:1].upper() + cleaned[1:])
 
+    def chatbot_parse_structured_ticket_fields(raw_text: str) -> dict[str, str]:
+        """Parse "Field: Value" formatted ticket creation messages.
+
+        Supports both single-line (comma/newline separated) and multi-line formats:
+            Ticket type: IT
+            Category: Password
+            Title: Forgotten password
+            Description: I forgot my laptop password
+            Priority: High
+        Returns a dict with keys: ticket_type, category, title, description, priority.
+        Only keys that are found in the message are included.
+        """
+        field_map: dict[str, str] = {}
+        patterns = {
+            "ticket_type": r"(?:ticket[_\s-]*type|type)\s*:\s*([^\n,;]+)",
+            "category":    r"category\s*:\s*([^\n,;]+)",
+            "title":       r"title\s*:\s*([^\n,;]+)",
+            "description": r"description\s*:\s*([^\n]+)",
+            "priority":    r"priority\s*:\s*([^\n,;]+)",
+        }
+        for key, pattern in patterns.items():
+            m = re.search(pattern, raw_text, re.IGNORECASE)
+            if m:
+                value = m.group(1).strip().rstrip(".,;")
+                if value:
+                    field_map[key] = value
+        return field_map
+
     def chatbot_infer_ticket_payload(user: dict, raw_text: str, text: str) -> tuple[dict, list[str]]:
         missing: list[str] = []
+
+        # Try structured "Field: Value" parsing first (highest priority)
+        structured = chatbot_parse_structured_ticket_fields(raw_text)
+        if len(structured) >= 3:
+            # Normalise ticket_type
+            raw_type = structured.get("ticket_type", "").strip().upper()
+            ticket_type = "IT" if raw_type in {"IT", "I.T", "I.T."} else "Admin" if raw_type in {"ADMIN", "ADMINISTRATION"} else (raw_type or ("IT" if user["role"] == "it_manager" else "Admin"))
+            # Normalise priority
+            raw_priority = structured.get("priority", "").strip().capitalize()
+            priority_map = {"Critical": "Critical", "High": "High", "Medium": "Medium", "Normal": "Medium", "Low": "Low"}
+            priority = priority_map.get(raw_priority, "Medium")
+            # Category: use structured value, capitalised
+            category = structured.get("category", "Other").strip().title()
+            title = structured.get("title", "").strip()
+            description = structured.get("description", "").strip() or raw_text.strip()
+            required_fields = {"ticket_type", "category", "title", "description", "priority"}
+            missing_structured = [f for f in required_fields if not structured.get(f)]
+            payload = {
+                "ticket_type": ticket_type,
+                "title": title or "New ticket request",
+                "description": description,
+                "category": category,
+                "priority": priority,
+                "status": "Open",
+                "due_date": None,
+                "approval_required": False,
+            }
+            return payload, missing_structured
+
+        # Keyword-inference fallback (for natural-language requests)
         ticket_type = "IT" if chatbot_has_any(text, ["it", "laptop", "password", "printer", "software", "device", "vpn", "login", "access"]) else "Admin"
         if user["role"] == "it_manager":
             ticket_type = "IT"
@@ -2715,6 +2809,11 @@ def create_app(database_path: str | None = None) -> FastAPI:
             return chatbot_date_response()
         if detected_intent == "utility_time":
             return chatbot_time_response()
+
+        _action_handler = ActionHandler(repository, user)
+        _action_response = _action_handler.handle(message, intent_result)
+        if _action_response is not None:
+            return chatbot_response(_action_response, source="Conci AI")
 
         requested_branch = branch_from_text(text)
         tickets = filter_by_branch(visible_tickets_for(user), requested_branch)
@@ -3381,6 +3480,14 @@ def create_app(database_path: str | None = None) -> FastAPI:
     def create_user(payload: UserCreateRequest, actor: dict = Depends(admin_user)) -> dict:
         try:
             user = auth.create_user(actor=actor, payload=payload.model_dump())
+            _tg_notify(
+                f"👤 <b>New User Created</b>\n"
+                f"Name: {user.get('name', '—')}\n"
+                f"Email: {user.get('email', '—')}\n"
+                f"Role: {user.get('role', '—')}\n"
+                f"By: {actor.get('name', actor.get('email', '—'))}\n"
+                f"Time: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC"
+            )
             return {"user": user}
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -3423,6 +3530,14 @@ def create_app(database_path: str | None = None) -> FastAPI:
     def delete_user(user_id: int, actor: dict = Depends(admin_user)) -> dict:
         try:
             user = auth.delete_user(actor=actor, user_id=user_id)
+            _tg_notify(
+                f"🗑️ <b>User Deleted</b>\n"
+                f"Name: {user.get('name', '—')}\n"
+                f"Email: {user.get('email', '—')}\n"
+                f"Role: {user.get('role', '—')}\n"
+                f"By: {actor.get('name', actor.get('email', '—'))}\n"
+                f"Time: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC"
+            )
             return {"user": user}
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -3827,6 +3942,15 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 "actor_role": user["role"],
             },
         )
+        _tg_notify(
+            f"✅ <b>New Task Created</b>\n"
+            f"ID: {task.get('task_id', '—')}\n"
+            f"Title: {task.get('title', '—')}\n"
+            f"Priority: {task.get('priority', '—')}\n"
+            f"Assigned to: {task.get('assigned_to', '—')}\n"
+            f"By: {user.get('name', user.get('email', '—'))}\n"
+            f"Time: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC"
+        )
         return {"task": task_with_status_flags(task)}
 
     @app.get("/api/tasks/{task_id}")
@@ -3948,6 +4072,86 @@ def create_app(database_path: str | None = None) -> FastAPI:
             repository.mark_notification_read(notification["id"], user["id"])
         return {"notifications": visible_notifications_for(user), "unread_count": 0}
 
+    # ── Agent Monitoring Endpoints ────────────────────────────────────────────
+
+    _KNOWN_AGENTS = ["ticket_watchdog", "expense_monitor", "inventory_monitor", "daily_briefing"]
+    _AGENT_SCHEDULES = {
+        "ticket_watchdog":  "Every 1 hour",
+        "expense_monitor":  "Every 2 hours",
+        "inventory_monitor":"Every 6 hours",
+        "daily_briefing":   "Daily at 8 AM UTC",
+    }
+
+    @app.get("/api/agents/logs")
+    def get_agent_logs(
+        agent_name: str | None = None,
+        limit: int = 50,
+        user: dict = Depends(current_user),
+    ) -> dict:
+        if user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="Admin access required")
+        logs = repository.get_agent_logs(agent_name=agent_name, limit=limit)
+        return {"logs": logs, "count": len(logs)}
+
+    @app.get("/api/agents/status")
+    def get_agents_status(user: dict = Depends(current_user)) -> dict:
+        if user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="Admin access required")
+        from app.services.scheduler import _scheduler
+        scheduler_running = bool(_scheduler and _scheduler.running)
+        agents = []
+        for name in _KNOWN_AGENTS:
+            recent = repository.get_agent_logs(agent_name=name, limit=1)
+            last_run = recent[0] if recent else None
+            job = None
+            if scheduler_running and _scheduler:
+                try:
+                    job = _scheduler.get_job(name)
+                except Exception:
+                    pass
+            agents.append({
+                "name": name,
+                "schedule": _AGENT_SCHEDULES.get(name, "Unknown"),
+                "last_run_at": last_run["created_at"] if last_run else None,
+                "last_status": last_run["status"] if last_run else "never_run",
+                "last_message": last_run["message"] if last_run else None,
+                "next_run_at": job.next_run_time.isoformat() if job and job.next_run_time else None,
+                "scheduler_running": scheduler_running,
+            })
+        return {"agents": agents, "scheduler_running": scheduler_running}
+
+    @app.post("/api/agents/run/{agent_name}")
+    def run_agent_now(agent_name: str, user: dict = Depends(current_user)) -> dict:
+        if user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="Admin access required")
+        if agent_name not in _KNOWN_AGENTS:
+            raise HTTPException(status_code=404, detail=f"Unknown agent: {agent_name}")
+        from app.services import scheduler as sched
+        agent_fn = getattr(sched, agent_name, None)
+        if not agent_fn:
+            raise HTTPException(status_code=500, detail="Agent function not found")
+        try:
+            db_path = str(settings.database_path)
+            agent_fn(db_path)
+            recent = repository.get_agent_logs(agent_name=agent_name, limit=1)
+            return {
+                "ok": True,
+                "message": f"Agent '{agent_name}' executed successfully.",
+                "log": recent[0] if recent else None,
+            }
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+
+    @app.post("/api/telegram/test")
+    def test_telegram(user: dict = Depends(current_user)) -> dict:
+        if user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="Admin access required")
+        from app.services.telegram_service import send_telegram_sync
+        result = send_telegram_sync(
+            "✅ <b>Conci Agent Test</b>\nTelegram integration confirmed from Agent Concierge."
+        )
+        return result
+
     @app.post("/api/tickets")
     def create_ticket(payload: TicketCreateRequest, user: dict = Depends(current_user)) -> dict:
         assignment = ticket_assignment(payload.ticket_type, payload.category)
@@ -3983,6 +4187,15 @@ def create_app(database_path: str | None = None) -> FastAPI:
             "ticket.created",
             "New ticket created",
             f"New ticket created: {ticket['title']}",
+        )
+        _tg_notify(
+            f"🎫 <b>New Ticket Created</b>\n"
+            f"ID: {ticket.get('ticket_id', '—')}\n"
+            f"Title: {ticket.get('title', '—')}\n"
+            f"Priority: {ticket.get('priority', '—')}\n"
+            f"Category: {ticket.get('category', '—')}\n"
+            f"By: {user.get('name', user.get('email', '—'))}\n"
+            f"Time: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC"
         )
         return {"ticket": ticket}
 
@@ -4052,6 +4265,14 @@ def create_app(database_path: str | None = None) -> FastAPI:
         )
         if ticket["status"] != existing["status"]:
             create_ticket_status_notification(ticket)
+            _tg_notify(
+                f"🔄 <b>Ticket Status Updated</b>\n"
+                f"ID: {ticket.get('ticket_id', '—')}\n"
+                f"Title: {ticket.get('title', '—')}\n"
+                f"Status: {existing.get('status', '—')} → {ticket.get('status', '—')}\n"
+                f"By: {user.get('name', user.get('email', '—'))}\n"
+                f"Time: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC"
+            )
         return {"ticket": ticket}
 
     @app.get("/api/expenses")
@@ -4082,6 +4303,14 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 "actor_user_id": user["id"],
                 "actor_role": user["role"],
             },
+        )
+        _tg_notify(
+            f"💰 <b>New Expense Added</b>\n"
+            f"ID: {expense.get('expense_id', '—')}\n"
+            f"Amount: ₹{float(expense.get('amount', 0)):,.0f}\n"
+            f"Category: {expense.get('category', '—')}\n"
+            f"By: {user.get('name', user.get('email', '—'))}\n"
+            f"Time: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC"
         )
         return {"expense": expense}
 
@@ -4204,6 +4433,15 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 "actor_role": user["role"],
             },
         )
+        if payload.status in {"Approved", "Rejected", "Paid", "Reimbursed"}:
+            _tg_notify(
+                f"✅ <b>Expense {payload.status}</b>\n"
+                f"ID: {expense.get('expense_id', '—')}\n"
+                f"Amount: ₹{float(expense.get('amount', 0)):,.0f}\n"
+                f"Category: {expense.get('category', '—')}\n"
+                f"By: {user.get('name', user.get('email', '—'))}\n"
+                f"Time: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC"
+            )
         return {"expense": expense}
 
     @app.get("/api/travel")
@@ -4241,6 +4479,15 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 "actor_role": user["role"],
             },
         )
+        _tg_notify(
+            f"✈️ <b>New Travel Record Added</b>\n"
+            f"ID: {record.get('travel_id', '—')}\n"
+            f"Destination: {record.get('destination_to', '—')}\n"
+            f"Employee: {record.get('employee_email', '—')}\n"
+            f"Spend: ₹{float(record.get('actual_spend', 0) or 0):,.0f}\n"
+            f"By: {user.get('name', user.get('email', '—'))}\n"
+            f"Time: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC"
+        )
         return {"travel_record": record}
 
     @app.put("/api/travel/{travel_row_id}")
@@ -4272,6 +4519,14 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 "actor_user_id": user["id"],
                 "actor_role": user["role"],
             },
+        )
+        _tg_notify(
+            f"✏️ <b>Travel Record Updated</b>\n"
+            f"ID: {record.get('travel_id', '—')}\n"
+            f"Destination: {record.get('destination_to', '—')}\n"
+            f"Employee: {record.get('employee_email', '—')}\n"
+            f"By: {user.get('name', user.get('email', '—'))}\n"
+            f"Time: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC"
         )
         return {"travel_record": record}
 
@@ -4528,6 +4783,15 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 "actor_role": user["role"],
             },
         )
+        _tg_notify(
+            f"📦 <b>Inventory Item Added</b>\n"
+            f"Item: {item.get('item_name', '—')}\n"
+            f"ID: {item.get('item_id', '—')}\n"
+            f"Category: {item.get('category', '—')}\n"
+            f"Branch: {item.get('branch', '—')}\n"
+            f"By: {user.get('name', user.get('email', '—'))}\n"
+            f"Time: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC"
+        )
         return {"inventory_item": item}
 
     @app.post("/api/inventory/import/preview")
@@ -4648,6 +4912,14 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 "actor_role": user["role"],
             },
         )
+        _tg_notify(
+            f"✏️ <b>Inventory Item Updated</b>\n"
+            f"Item: {item.get('item_name', '—')}\n"
+            f"ID: {item.get('item_id', '—')}\n"
+            f"Category: {item.get('category', '—')}\n"
+            f"By: {user.get('name', user.get('email', '—'))}\n"
+            f"Time: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC"
+        )
         return {"inventory_item": item}
 
     @app.patch("/api/inventory/{item_id}/status")
@@ -4672,6 +4944,14 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 "actor_user_id": user["id"],
                 "actor_role": user["role"],
             },
+        )
+        _tg_notify(
+            f"🔄 <b>Inventory Status Changed</b>\n"
+            f"Item: {item.get('item_name', '—')}\n"
+            f"ID: {item.get('item_id', '—')}\n"
+            f"Status: {item.get('status', '—')}\n"
+            f"By: {user.get('name', user.get('email', '—'))}\n"
+            f"Time: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC"
         )
         return {"inventory_item": item}
 
@@ -4806,6 +5086,14 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 "actor_role": user["role"],
             },
         )
+        _tg_notify(
+            f"🏢 <b>New Vendor Added</b>\n"
+            f"Name: {vendor.get('vendor_name', '—')}\n"
+            f"Service: {vendor.get('service_provided', '—')}\n"
+            f"Status: Active\n"
+            f"By: {user.get('name', user.get('email', '—'))}\n"
+            f"Time: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC"
+        )
         return {"vendor": vendor}
 
     @app.put("/api/vendors/{vendor_id}")
@@ -4835,6 +5123,13 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 "actor_role": user["role"],
             },
         )
+        _tg_notify(
+            f"✏️ <b>Vendor Updated</b>\n"
+            f"Name: {vendor.get('vendor_name', '—')}\n"
+            f"ID: {vendor_id}\n"
+            f"By: {user.get('name', user.get('email', '—'))}\n"
+            f"Time: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC"
+        )
         return {"vendor": vendor}
 
     @app.patch("/api/vendors/{vendor_id}/close")
@@ -4857,6 +5152,13 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 "actor_role": user["role"],
             },
         )
+        _tg_notify(
+            f"🔴 <b>Vendor Closed</b>\n"
+            f"Name: {vendor.get('vendor_name', '—')}\n"
+            f"ID: {vendor_id}\n"
+            f"By: {user.get('name', user.get('email', '—'))}\n"
+            f"Time: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC"
+        )
         return {"vendor": vendor}
 
     @app.patch("/api/vendors/{vendor_id}/reopen")
@@ -4877,6 +5179,13 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 "actor_user_id": user["id"],
                 "actor_role": user["role"],
             },
+        )
+        _tg_notify(
+            f"🟢 <b>Vendor Reopened</b>\n"
+            f"Name: {vendor.get('vendor_name', '—')}\n"
+            f"ID: {vendor_id}\n"
+            f"By: {user.get('name', user.get('email', '—'))}\n"
+            f"Time: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC"
         )
         return {"vendor": vendor}
 
@@ -4940,6 +5249,16 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 body=payload.body,
                 reason=payload.reason,
                 actor_user=user,
+            )
+            _action = payload.action or ""
+            _emoji = "✅" if _action.lower() in ("approve", "approved") else "❌"
+            _tg_notify(
+                f"{_emoji} <b>Approval {_action.title()}</b>\n"
+                f"Approval ID: {approval_id}\n"
+                f"Request: {approval.get('task_type', approval.get('subject', '—'))}\n"
+                f"Decision: {_action}\n"
+                f"By: {user.get('name', user.get('email', '—'))}\n"
+                f"Time: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} UTC"
             )
             return {"approval": approval, "dashboard": repository.dashboard()}
         except ValueError as exc:

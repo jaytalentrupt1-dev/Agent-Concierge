@@ -589,3 +589,22 @@ export function resetUserPassword(id, password) {
     body: JSON.stringify({ password })
   });
 }
+
+// ── Agent Monitoring ──────────────────────────────────────────────────────────
+export function getAgentsStatus() {
+  return request("/api/agents/status");
+}
+
+export function getAgentLogs(agentName = null, limit = 50) {
+  const params = new URLSearchParams({ limit });
+  if (agentName) params.set("agent_name", agentName);
+  return request(`/api/agents/logs?${params}`);
+}
+
+export function runAgentNow(agentName) {
+  return request(`/api/agents/run/${agentName}`, { method: "POST" });
+}
+
+export function testTelegram() {
+  return request("/api/telegram/test", { method: "POST" });
+}
