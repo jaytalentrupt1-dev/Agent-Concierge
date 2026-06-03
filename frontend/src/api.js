@@ -605,6 +605,13 @@ export function runAgentNow(agentName) {
   return request(`/api/agents/run/${agentName}`, { method: "POST" });
 }
 
+export function toggleAgent(agentName, enabled) {
+  return request(`/api/agents/${agentName}/toggle`, {
+    method: "PATCH",
+    body: JSON.stringify({ enabled }),
+  });
+}
+
 export function testTelegram() {
   return request("/api/telegram/test", { method: "POST" });
 }

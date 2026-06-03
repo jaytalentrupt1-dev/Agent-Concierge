@@ -1255,6 +1255,12 @@ html:not([data-theme="dark"]) .kpi-icon { background: rgba(239,68,68,0.08); }
 html:not([data-theme="dark"]) .kpi-label { color: #6b6b6b; }
 html:not([data-theme="dark"]) .kpi-value { color: #0a0a0a; }
 
+/* ── Light mode metric-icon — use red tint instead of legacy blue (#eef2ff) ── */
+html:not([data-theme="dark"]) .metric-icon {
+  background: rgba(239,68,68,0.08) !important;
+  color: #EF4444 !important;
+}
+
 /* ════════════════════════════════════════════════════════════
    CHART CARD — clean chart container
    ════════════════════════════════════════════════════════════ */
@@ -1823,6 +1829,12 @@ html:not([data-theme="dark"]) .conci-panel-header {
   background: #FFFFFF !important;
   border-bottom: 1px solid #E5E7EB !important;
   box-sizing: border-box !important;
+}
+/* Conci AI icon circle — swap dark badge for light red-tinted badge */
+html:not([data-theme="dark"]) .conci-icon {
+  background: rgba(239,68,68,0.10) !important;
+  border-color: rgba(239,68,68,0.25) !important;
+  box-shadow: none !important;
 }
 
 /* Context notice strip */
@@ -4295,6 +4307,11 @@ html:not([data-theme="dark"]) .task-summary-pill.active {
   background: rgba(239,68,68,0.1);
   border-color: rgba(239,68,68,0.3);
   color: #EF4444;
+}
+.am-status-pill.paused {
+  background: rgba(245,158,11,0.1);
+  border-color: rgba(245,158,11,0.3);
+  color: #F59E0B;
 }
 
 /* toggle */

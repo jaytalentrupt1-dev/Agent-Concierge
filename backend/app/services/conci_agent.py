@@ -22,6 +22,13 @@ class IntentResult:
     action_type: str = "answer"
     missing_fields: list[str] = field(default_factory=list)
     confirmation_required: bool = False
+    # Tracks how this classification was produced.  Used by action_handler to
+    # decide whether an intent match is trustworthy enough to abort slot-filling.
+    # Values: "strong_rule" (keyword rule, 0.96) | "ai" (OpenAI/DeepInfra, 0.9)
+    #         | "local" (phrase similarity, 0.58–1.0)
+    # "ai" classifications are distrusted during active slot-filling because the
+    # typo-corrector can corrupt slot values before they reach the external model.
+    classification_source: str = "local"
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -398,7 +405,10 @@ class ConciAgentIntentService:
             if score > best_score:
                 best_score = score
                 best_word = word
-        return best_word if best_score >= 0.78 else token
+        # Raised from 0.78 → 0.90 to prevent single-char-difference false corrections
+        # (e.g. "filling" → "billing" scored 0.857, corrupting slot values before the AI sees them).
+        # Real typos (e.g. "tiket" → "ticket", score ≈ 0.91) still qualify.
+        return best_word if best_score >= 0.90 else token
 
     @classmethod
     def classify(cls, message: str, openai_intent: str | None = None, openai_entities: dict[str, Any] | None = None) -> IntentResult:
@@ -413,15 +423,28 @@ class ConciAgentIntentService:
             # Extract field values from the original (colon-intact) message.
             structured_entities = cls._extract_structured_ticket_entities(message)
             merged = {**structured_entities, **(openai_entities or {})}
-            return cls._result_for("create_ticket", 0.97, normalized, merged)
+            return cls._result_for("create_ticket", 0.97, normalized, merged,
+                                   classification_source="strong_rule")
 
         openai_intent = cls._normalize_intent_id(openai_intent or "")
         if openai_intent in cls.INTENT_DEFINITIONS:
-            return cls._result_for(openai_intent, 0.9, normalized, openai_entities or {})
+            # Check whether the local strong-rule independently fires the same intent.
+            # chatbot_priority_local_intent() re-uses this openai_intent path to pass
+            # strong-rule results back in — we must preserve their "strong_rule" origin
+            # so action_handler can trust them to abort active slot-filling.
+            # Pure AI classifications (where strong rule disagrees) keep source="ai"
+            # and are distrusted mid-slot-filling to prevent typo-corruption false aborts.
+            rule_check = cls._strong_rule_intent(normalized)
+            if rule_check == openai_intent:
+                return cls._result_for(openai_intent, 0.96, normalized, openai_entities or {},
+                                       classification_source="strong_rule")
+            return cls._result_for(openai_intent, 0.9, normalized, openai_entities or {},
+                                   classification_source="ai")
 
         rule_intent = cls._strong_rule_intent(normalized)
         if rule_intent:
-            return cls._result_for(rule_intent, 0.96, normalized)
+            return cls._result_for(rule_intent, 0.96, normalized,
+                                   classification_source="strong_rule")
 
         best_intent = "unsupported"
         best_score = 0.0
@@ -433,8 +456,10 @@ class ConciAgentIntentService:
                     best_intent = intent
 
         if best_score < 0.58:
-            return cls._result_for("unsupported", best_score, normalized)
-        return cls._result_for(best_intent, best_score, normalized)
+            return cls._result_for("unsupported", best_score, normalized,
+                                   classification_source="local")
+        return cls._result_for(best_intent, best_score, normalized,
+                               classification_source="local")
 
     @staticmethod
     def _normalize_intent_id(value: str) -> str:
@@ -600,6 +625,7 @@ class ConciAgentIntentService:
         confidence: float,
         normalized_text: str,
         extra_entities: dict[str, Any] | None = None,
+        classification_source: str = "local",
     ) -> IntentResult:
         definition = cls.INTENT_DEFINITIONS.get(intent, {})
         entities = cls.extract_entities(normalized_text)
@@ -613,6 +639,7 @@ class ConciAgentIntentService:
             action_type=str(definition.get("action_type", "answer")),
             missing_fields=list(definition.get("missing_fields", [])),
             confirmation_required=bool(definition.get("confirmation_required", False)),
+            classification_source=classification_source,
         )
 
     @staticmethod

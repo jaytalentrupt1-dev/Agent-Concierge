@@ -6,7 +6,7 @@ from typing import Any
 _conversation_store: dict[int | str, "ConversationState"] = {}
 
 REQUIRED_FIELDS: dict[str, list[str]] = {
-    "create_ticket":        ["title", "category", "priority"],
+    "create_ticket":        ["title", "category", "priority", "branch"],
     "create_task":          ["title", "category", "priority", "assigned_to"],
     "approve_expense":      ["expense_id", "action"],
     "ticket_status_update": ["ticket_id", "status"],
@@ -16,6 +16,7 @@ FIELD_PROMPTS: dict[str, str] = {
     "title":       "What should the title be?",
     "category":    "What category? (e.g. Hardware, Software, General)",
     "priority":    "What priority? (Low / Medium / High)",
+    "branch":      "Which branch? (Pune / Ahmedabad / Vadodara / Noida)",
     "assigned_to": "Who should this be assigned to?",
     "ticket_id":   "What is the ticket ID? (e.g. IT-1001)",
     "status":      "What status? (e.g. Resolved, Closed, In Progress)",

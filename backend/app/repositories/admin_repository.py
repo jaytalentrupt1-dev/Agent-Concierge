@@ -3213,6 +3213,35 @@ class AdminRepository:
             notification_id = int(cursor.lastrowid)
         return self.get_notification(notification_id)
 
+    def notification_exists_for_entity(
+        self,
+        entity_type: str,
+        entity_id: str,
+        target_role: str,
+        hours: int = 24,
+    ) -> bool:
+        """Return True if a notification for this entity/role already exists within the last `hours` hours.
+
+        Used by background agents to skip redundant notifications for the same
+        expense, ticket, or inventory item within a rolling deduplication window.
+        """
+        from datetime import datetime, timedelta, timezone as _tz
+        self.ensure_notification_schema()
+        cutoff = (datetime.now(_tz.utc) - timedelta(hours=hours)).isoformat()
+        with self.db.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT 1 FROM notifications
+                WHERE related_entity_type = ?
+                  AND related_entity_id   = ?
+                  AND target_role         = ?
+                  AND created_at          >= ?
+                LIMIT 1
+                """,
+                (entity_type, str(entity_id), target_role, cutoff),
+            ).fetchone()
+        return row is not None
+
     def get_notification(self, notification_id: int) -> dict:
         self.ensure_notification_schema()
         with self.db.connection() as conn:

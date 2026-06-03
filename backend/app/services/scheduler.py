@@ -48,29 +48,32 @@ def ticket_watchdog(database_path: str) -> None:
 
         for ticket in open_tickets:
             created_at = _parse_dt(ticket.get("created_at"))
+            ticket_id_str = ticket.get("ticket_id", str(ticket["id"]))
             if created_at and (now - created_at) > timedelta(hours=48):
                 repo.update_ticket(ticket["id"], status="Overdue")
-                repo.add_notification({
-                    "title":               f"Ticket Overdue: {ticket.get('ticket_id', '')}",
-                    "message":             f"{ticket.get('title', '')} has been open for more than 48 hours.",
-                    "type":                "warning",
-                    "related_entity_type": "ticket",
-                    "related_entity_id":   ticket.get("ticket_id", str(ticket["id"])),
-                    "target_role":         "admin",
-                })
+                if not repo.notification_exists_for_entity("ticket", ticket_id_str, "admin", hours=24):
+                    repo.add_notification({
+                        "title":               f"Ticket Overdue: {ticket_id_str}",
+                        "message":             f"{ticket.get('title', '')} has been open for more than 48 hours.",
+                        "type":                "warning",
+                        "related_entity_type": "ticket",
+                        "related_entity_id":   ticket_id_str,
+                        "target_role":         "admin",
+                    })
                 overdue_count += 1
 
             if not ticket.get("assigned_role") or ticket.get("assigned_role") == "admin":
                 auto_role = "it_manager" if ticket.get("ticket_type", "").lower() == "it" else "admin"
                 repo.update_ticket(ticket["id"], assigned_role=auto_role)
-                repo.add_notification({
-                    "title":               f"New Ticket Assigned: {ticket.get('ticket_id', '')}",
-                    "message":             f"{ticket.get('title', '')} auto-assigned to {auto_role.replace('_', ' ').title()}.",
-                    "type":                "info",
-                    "related_entity_type": "ticket",
-                    "related_entity_id":   ticket.get("ticket_id", str(ticket["id"])),
-                    "target_role":         auto_role,
-                })
+                if not repo.notification_exists_for_entity("ticket", ticket_id_str, auto_role, hours=24):
+                    repo.add_notification({
+                        "title":               f"New Ticket Assigned: {ticket_id_str}",
+                        "message":             f"{ticket.get('title', '')} auto-assigned to {auto_role.replace('_', ' ').title()}.",
+                        "type":                "info",
+                        "related_entity_type": "ticket",
+                        "related_entity_id":   ticket_id_str,
+                        "target_role":         auto_role,
+                    })
                 auto_assigned += 1
 
         summary = (
@@ -120,25 +123,27 @@ def expense_monitor(database_path: str) -> None:
 
             if created_at and (now - created_at) > timedelta(hours=72):
                 age_days = (now - created_at).days
-                repo.add_notification({
-                    "title":               "Expense Awaiting Approval",
-                    "message":             f"{exp_id} — ₹{amount:,.0f} has been pending for {age_days} day(s).",
-                    "type":                "warning",
-                    "related_entity_type": "expense",
-                    "related_entity_id":   exp_id,
-                    "target_role":         "finance_manager",
-                })
-                alerted += 1
+                if not repo.notification_exists_for_entity("expense", exp_id, "finance_manager", hours=24):
+                    repo.add_notification({
+                        "title":               "Expense Awaiting Approval",
+                        "message":             f"{exp_id} — ₹{amount:,.0f} has been pending for {age_days} day(s).",
+                        "type":                "warning",
+                        "related_entity_type": "expense",
+                        "related_entity_id":   exp_id,
+                        "target_role":         "finance_manager",
+                    })
+                    alerted += 1
 
             if amount > 100000:
-                repo.add_notification({
-                    "title":               "High Value Expense",
-                    "message":             f"{exp_id} — ₹{amount:,.0f} requires Admin review.",
-                    "type":                "alert",
-                    "related_entity_type": "expense",
-                    "related_entity_id":   exp_id,
-                    "target_role":         "admin",
-                })
+                if not repo.notification_exists_for_entity("expense", exp_id, "admin", hours=24):
+                    repo.add_notification({
+                        "title":               "High Value Expense",
+                        "message":             f"{exp_id} — ₹{amount:,.0f} requires Admin review.",
+                        "type":                "alert",
+                        "related_entity_type": "expense",
+                        "related_entity_id":   exp_id,
+                        "target_role":         "admin",
+                    })
 
         summary = f"expense_monitor: checked {len(pending)} pending expenses, sent {alerted} alerts"
         logger.info(summary)
@@ -179,21 +184,23 @@ def inventory_monitor(database_path: str) -> None:
 
         for item in submitted:
             updated_at = _parse_dt(item.get("updated_at"))
+            item_id_str = item.get("item_id", str(item["id"]))
             if updated_at and (now - updated_at) > timedelta(days=30):
                 age_days = (now - updated_at).days
-                repo.add_notification({
-                    "title":               "Asset Pending with Vendor",
-                    "message":             (
-                        f"{item.get('serial_number', item.get('serial_no', ''))} — "
-                        f"{item.get('model', item.get('model_no', ''))} "
-                        f"submitted {age_days} day(s) ago."
-                    ),
-                    "type":                "warning",
-                    "related_entity_type": "inventory",
-                    "related_entity_id":   item.get("item_id", str(item["id"])),
-                    "target_role":         "it_manager",
-                })
-                alerted += 1
+                if not repo.notification_exists_for_entity("inventory", item_id_str, "it_manager", hours=24):
+                    repo.add_notification({
+                        "title":               "Asset Pending with Vendor",
+                        "message":             (
+                            f"{item.get('serial_number', item.get('serial_no', ''))} — "
+                            f"{item.get('model', item.get('model_no', ''))} "
+                            f"submitted {age_days} day(s) ago."
+                        ),
+                        "type":                "warning",
+                        "related_entity_type": "inventory",
+                        "related_entity_id":   item_id_str,
+                        "target_role":         "it_manager",
+                    })
+                    alerted += 1
 
         summary = f"inventory_monitor: checked {len(submitted)} submitted items, sent {alerted} alerts"
         logger.info(summary)
@@ -249,15 +256,16 @@ def daily_briefing(database_path: str) -> None:
             f"Active Vendors: {active_vendors}"
         )
 
-        # Admin gets the full daily briefing
-        repo.add_notification({
-            "title":               "Daily Briefing",
-            "message":             summary_text,
-            "type":                "info",
-            "related_entity_type": "system",
-            "related_entity_id":   "daily_briefing",
-            "target_role":         "admin",
-        })
+        # Admin gets the full daily briefing — only when there is actionable activity
+        if open_tickets > 0 or overdue_tasks > 0 or pending_expenses > 0:
+            repo.add_notification({
+                "title":               "Daily Briefing",
+                "message":             summary_text,
+                "type":                "info",
+                "related_entity_type": "system",
+                "related_entity_id":   "daily_briefing",
+                "target_role":         "admin",
+            })
 
         # IT Manager gets ticket + task summary
         if open_tickets > 0 or overdue_tasks > 0:
@@ -366,3 +374,29 @@ def stop_scheduler() -> None:
     if _scheduler and _scheduler.running:
         _scheduler.shutdown(wait=False)
         logger.info("Scheduler stopped")
+
+
+def pause_job(job_id: str) -> bool:
+    """Pause a scheduled job by ID.  Returns True on success, False if not found."""
+    if not _scheduler or not _scheduler.running:
+        return False
+    try:
+        _scheduler.pause_job(job_id)
+        logger.info("Scheduler job paused: %s", job_id)
+        return True
+    except Exception as exc:
+        logger.error("pause_job(%s) failed: %s", job_id, exc)
+        return False
+
+
+def resume_job(job_id: str) -> bool:
+    """Resume a paused scheduled job by ID.  Returns True on success, False if not found."""
+    if not _scheduler or not _scheduler.running:
+        return False
+    try:
+        _scheduler.resume_job(job_id)
+        logger.info("Scheduler job resumed: %s", job_id)
+        return True
+    except Exception as exc:
+        logger.error("resume_job(%s) failed: %s", job_id, exc)
+        return False

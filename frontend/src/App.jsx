@@ -4210,11 +4210,12 @@ function getBarColor(name, isDark) {
 }
 
 function DashboardBarChart({ data, valueKind, isDark }) {
+  const axisColor = isDark ? "#71717A" : "#52525B";
   return (
     <RechartsBarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? "#1F1F1F" : "#E4E4E7"} />
-      <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#71717A" }} interval={0} height={44} tickLine={false} axisLine={false} />
-      <YAxis tick={{ fontSize: 11, fill: "#71717A" }} tickLine={false} axisLine={false} width={42} />
+      <XAxis dataKey="name" tick={{ fontSize: 11, fill: axisColor }} interval={0} height={44} tickLine={false} axisLine={false} />
+      <YAxis tick={{ fontSize: 11, fill: axisColor }} tickLine={false} axisLine={false} width={42} />
       <Tooltip content={(props) => <DashboardTooltip {...props} valueKind={valueKind} />} />
       <Bar dataKey="value" radius={[4, 4, 0, 0]}>
         {data.map((entry) => (
@@ -4226,11 +4227,12 @@ function DashboardBarChart({ data, valueKind, isDark }) {
 }
 
 function DashboardLineChart({ data, valueKind, isDark }) {
+  const axisColor = isDark ? "#71717A" : "#52525B";
   return (
     <LineChart data={data} margin={{ top: 8, right: 10, left: 0, bottom: 0 }}>
       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDark ? "#2a2a2a" : "#E4E4E7"} />
-      <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#71717A" }} tickLine={false} axisLine={false} />
-      <YAxis tick={{ fontSize: 11, fill: "#71717A" }} tickLine={false} axisLine={false} width={42} />
+      <XAxis dataKey="name" tick={{ fontSize: 11, fill: axisColor }} tickLine={false} axisLine={false} />
+      <YAxis tick={{ fontSize: 11, fill: axisColor }} tickLine={false} axisLine={false} width={42} />
       <Tooltip content={(props) => <DashboardTooltip {...props} valueKind={valueKind} />} />
       <Line type="monotone" dataKey="value" stroke="#EF4444" strokeWidth={2.5} dot={{ r: 3, fill: "#EF4444", strokeWidth: 0 }} activeDot={{ r: 5, fill: "#EF4444" }} />
     </LineChart>

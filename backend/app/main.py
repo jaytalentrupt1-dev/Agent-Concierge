@@ -4109,6 +4109,8 @@ def create_app(database_path: str | None = None) -> FastAPI:
                     job = _scheduler.get_job(name)
                 except Exception:
                     pass
+            # A job is paused when it exists but next_run_time is None
+            paused = bool(job is not None and job.next_run_time is None)
             agents.append({
                 "name": name,
                 "schedule": _AGENT_SCHEDULES.get(name, "Unknown"),
@@ -4116,9 +4118,49 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 "last_status": last_run["status"] if last_run else "never_run",
                 "last_message": last_run["message"] if last_run else None,
                 "next_run_at": job.next_run_time.isoformat() if job and job.next_run_time else None,
+                "paused": paused,
                 "scheduler_running": scheduler_running,
             })
         return {"agents": agents, "scheduler_running": scheduler_running}
+
+    @app.patch("/api/agents/{agent_name}/toggle")
+    def toggle_agent(
+        agent_name: str,
+        payload: dict,
+        user: dict = Depends(admin_user),
+    ) -> dict:
+        if agent_name not in _KNOWN_AGENTS:
+            raise HTTPException(status_code=404, detail=f"Unknown agent: {agent_name}")
+        enabled = payload.get("enabled")
+        if not isinstance(enabled, bool):
+            raise HTTPException(status_code=422, detail="'enabled' must be a boolean")
+        from app.services.scheduler import pause_job, resume_job, _scheduler
+        if enabled:
+            ok = resume_job(agent_name)
+            action, log_message = "toggle_on", "resumed by admin"
+        else:
+            ok = pause_job(agent_name)
+            action, log_message = "toggle_off", "paused by admin"
+        if not ok:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Scheduler is not running or job '{agent_name}' not found.",
+            )
+        # Log the toggle action to agent_logs
+        repository.create_agent_log(
+            agent_name=agent_name,
+            status="info",
+            message=log_message,
+            data={"action": action, "actor": user.get("email", "admin")},
+        )
+        # Re-read live paused state from scheduler
+        paused = True
+        try:
+            job = _scheduler.get_job(agent_name) if _scheduler else None
+            paused = bool(job is not None and job.next_run_time is None)
+        except Exception:
+            paused = not enabled
+        return {"ok": True, "agent": agent_name, "paused": paused}
 
     @app.post("/api/agents/run/{agent_name}")
     def run_agent_now(agent_name: str, user: dict = Depends(current_user)) -> dict:

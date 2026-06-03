@@ -17,7 +17,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { getAgentsStatus, getAgentLogs, runAgentNow, testTelegram } from "../api";
+import { getAgentsStatus, getAgentLogs, runAgentNow, testTelegram, toggleAgent } from "../api";
 
 /* ─── static metadata ─────────────────────────────────────────────── */
 const AGENT_META = {
@@ -220,8 +220,10 @@ function LogsModal({ agentName, onClose }) {
 }
 
 /* ─── AgentCard ──────────────────────────────────────────────────── */
-function AgentCard({ agent, onRun, running, onViewLogs, runResult }) {
-  const [enabled, setEnabled] = useState(true);
+function AgentCard({ agent, onRun, running, onViewLogs, runResult, setToast }) {
+  // Initialise from backend state: paused===true → enabled=false
+  const [enabled, setEnabled] = useState(agent.paused !== true);
+  const [toggling, setToggling] = useState(false);
   const meta = AGENT_META[agent.name] || { label: agent.name, icon: Bot, schedule: agent.schedule || "", desc: "" };
   const Icon = meta.icon;
   const isRunning = running === agent.name;
@@ -230,6 +232,20 @@ function AgentCard({ agent, onRun, running, onViewLogs, runResult }) {
 
   const lastRun = agent.last_run_at ? formatRelative(agent.last_run_at) : "—";
   const nextRun = agent.next_run_at ? formatRelative(agent.next_run_at) : "—";
+
+  async function handleToggle() {
+    const newEnabled = !enabled;
+    setEnabled(newEnabled);      // optimistic update
+    setToggling(true);
+    try {
+      await toggleAgent(agent.name, newEnabled);
+    } catch (err) {
+      setEnabled(!newEnabled);   // revert on error
+      setToast?.({ ok: false, msg: err.message || `Failed to ${newEnabled ? "resume" : "pause"} ${meta.label}.` });
+    } finally {
+      setToggling(false);
+    }
+  }
 
   return (
     <div className={`am-agent-card${justRanOk ? " am-agent-card--ok" : ""}${justRanErr ? " am-agent-card--err" : ""}`}>
@@ -245,8 +261,10 @@ function AgentCard({ agent, onRun, running, onViewLogs, runResult }) {
             {meta.schedule}
           </span>
         </div>
-        <span className="am-status-pill running">Running</span>
-        <Toggle checked={enabled} onChange={() => setEnabled((v) => !v)} />
+        <span className={`am-status-pill ${enabled ? "running" : "paused"}`}>
+          {enabled ? "Running" : "Paused"}
+        </span>
+        <Toggle checked={enabled} onChange={toggling ? undefined : handleToggle} />
       </div>
 
       {/* description */}
@@ -526,6 +544,7 @@ export default function AgentsDashboard({ setError }) {
                   running={runningAgent}
                   onViewLogs={openLogsModal}
                   runResult={runResult}
+                  setToast={setToast}
                 />
               ))}
             </div>

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 
 from app.repositories.admin_repository import AdminRepository
@@ -11,6 +12,8 @@ from app.services.conversation_state import (
     set_state,
 )
 from app.services.tool_executor import ToolExecutor
+
+logger = logging.getLogger(__name__)
 
 _CONFIRM_PHRASES = frozenset({"yes", "confirm", "ok", "sure", "proceed", "y", "yep", "yeah"})
 _CANCEL_PHRASES = frozenset({"no", "cancel", "n", "stop", "abort", "nope"})
@@ -35,6 +38,61 @@ _HANDLED_BY_EXISTING_CODE = frozenset({
 _BARE_TICKET_WORDS = frozenset({
     "create", "raise", "open", "new", "ticket", "tickets",
     "a", "an", "the", "please", "me", "i", "want", "need", "to",
+})
+
+# Intents that represent an unambiguous new command and should therefore abort
+# any active slot-filling conversation.  Only clear-cut fetch lookups and
+# different create/update pivots belong here.
+#
+# NOT included: casual_identity, utility_date, utility_time, file_reading —
+# these are too short or generic to reliably distinguish from a slot answer.
+# Also NOT included: the intent currently being collected (state.intent) —
+# that case is handled by the slot-collection path below.
+#
+# The core bug this fixes: slot values such as "Laptop screen broken" can
+# score ≥ 0.58 against fetch phrases like "inventory summary", triggering the
+# old broad abort guard and wiping the ticket-creation state.  The whitelist
+# ensures only genuine command-pivots clear the state.
+_SLOT_ABORT_INTENTS = frozenset({
+    # ── Ticket lookups ─────────────────────────────────────────────────────
+    "open_tickets",
+    "my_tickets",
+    "recent_tickets",
+    "ticket_status",
+    "ticket_status_update",
+    # ── Task lookups ───────────────────────────────────────────────────────
+    "open_tasks",
+    "my_tasks",
+    "overdue_tasks",
+    # ── Approval / finance lookups ─────────────────────────────────────────
+    "pending_approvals",
+    "vendor_billing",
+    "active_vendors",
+    "vendor_count",
+    "vendor_details",
+    "pending_expenses",
+    "expenses_by_month",
+    "expenses_by_category",
+    "expenses_last_month",
+    "expenses_this_month",
+    # ── Inventory lookups ──────────────────────────────────────────────────
+    "inventory_summary",
+    "inventory_in_use",
+    "inventory_submitted_vendor",
+    "inventory_recent_updates",
+    # ── Travel / calendar ─────────────────────────────────────────────────
+    "travel_spend",
+    "travel_recent_records",
+    "calendar_events",
+    # ── Reports / admin ───────────────────────────────────────────────────
+    "reports",
+    "users_settings",
+    # ── Utility ───────────────────────────────────────────────────────────
+    "help",
+    # ── Clearly different create/update flows ──────────────────────────────
+    "create_ticket",   # restart a ticket flow (distinct from collecting a slot value)
+    "create_task",
+    "create_vendor",
 })
 
 
@@ -80,15 +138,61 @@ class ActionHandler:
             if cleaned in _CANCEL_PHRASES or intent == "unsupported":
                 clear_state(self.user_id)
                 return "Action cancelled. How else can I help?"
-            # Any other message restarts — fall through so Conci handles it
+            # Any other message during confirmation — clear state and fall through
+            logger.debug(
+                "Conci slot-filling aborted: unexpected message during confirmation "
+                "(state.intent=%s, user_id=%s)",
+                state.intent, self.user_id,
+            )
             clear_state(self.user_id)
             return None
 
         # ── Active slot-filling state ───────────────────────────────────────────
         if state and not state.is_complete():
-            # If the user sent a recognized new intent instead of a field value,
-            # abort the old flow and let the new intent be handled normally.
-            if intent != "unsupported" and intent != state.intent:
+            # Only abort when the user sends an unambiguous new command.
+            #
+            # Two guards work together:
+            #   1. Whitelist — only fetch lookups and clearly different create/update
+            #      flows can abort.  Generic slot values like "Medium" or "IT" will
+            #      return "unsupported" and never reach this branch at all.
+            #   2. Confidence floor (≥ 0.85) — prevents descriptive slot values like
+            #      "Laptop screen broken" (fuzzy score ≈ 0.58–0.65 against phrases
+            #      such as "device summary") from triggering a false abort.  Only
+            #      high-confidence matches (strong-rule 0.96, OpenAI 0.9) qualify.
+            #
+            # This replaces the old guard (`intent != "unsupported" and
+            # intent != state.intent`) which aborted on ANY classifier hit ≥ 0.58.
+            confidence = float(intent_result.get("confidence") or 0.0)
+            source = intent_result.get("classification_source", "local")
+            # "ai" source means OpenAI/DeepInfra classified the intent.  We do NOT
+            # abort slot-filling on AI-only confidence because the typo-corrector
+            # can corrupt slot values before they reach the model, causing false pivots
+            # (e.g. "filling"→"billing" → AI fires vendor_billing at 0.9, clearing the state).
+            # Only "strong_rule" (keyword rules, 0.96) and "local" (phrase similarity,
+            # confirmed ≥ 0.85 by the score) are trusted to abort an active flow.
+            _will_abort = (
+                intent in _SLOT_ABORT_INTENTS
+                and intent != state.intent
+                and confidence >= 0.85
+                and source != "ai"
+            )
+            logger.info(
+                "SLOT DEBUG | input=%r | detected_intent=%s | confidence=%.3f"
+                " | source=%s | state.intent=%s | in_whitelist=%s | abort_decision=%s",
+                message,
+                intent,
+                confidence,
+                source,
+                state.intent,
+                intent in _SLOT_ABORT_INTENTS,
+                _will_abort,
+            )
+            if _will_abort:
+                logger.debug(
+                    "Conci slot-filling aborted: user pivoted to intent=%s "
+                    "(confidence=%.2f) mid-flow (state.intent=%s, user_id=%s)",
+                    intent, confidence, state.intent, self.user_id,
+                )
                 clear_state(self.user_id)
                 return None
 
