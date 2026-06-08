@@ -4,6 +4,20 @@ Newest entries first. Add a new row at the top after every code change.
 
 ---
 
+### 2026-06-04 — Two-way Telegram chat foundation (Phase A)
+**Files:** `backend/app/services/telegram_listener.py` (new), `backend/app/repositories/admin_repository.py`, `backend/app/main.py`, `frontend/src/api.js`, `frontend/src/App.jsx`
+**Why:** Enable users to query Agent Concierge via Telegram chat in addition to receiving outbound alerts
+**What:**
+- New `telegram_listener.py` — daemon thread polls `getUpdates` (long-polling); handles `/start`, `/register <code>`, `/unregister`, `/whoami`; Phase A placeholder reply for registered users
+- DB: added `telegram_chat_id`, `telegram_registered_at` columns to `users` (auto-migrated); new `telegram_registration_codes` table (code, user_id, expires_at, used)
+- New repository methods: `get_user_by_telegram_chat_id`, `set_user_telegram_chat_id`, `clear_user_telegram_chat_id`, `create_telegram_registration_code`, `get_telegram_registration_code`, `use_telegram_registration_code`
+- New API endpoints: `POST /api/telegram/register/start`, `GET /api/telegram/registration/status`, `POST /api/telegram/unregister`
+- FastAPI startup/shutdown hooks for listener (runs alongside scheduler)
+- Settings page: new `TelegramPanel` component — STATE A (Connect + code display), STATE B (Connected + Disconnect), auto-polls every 5s while code is shown
+- Outbound alerts (`telegram_service.py`) untouched
+
+---
+
 ### 2026-06-03 — Fixed notification spam from background agents
 **Files:** `backend/app/services/scheduler.py`, `backend/app/repositories/admin_repository.py`
 **Why:** Agents re-created notifications every run for the same entities — expense_monitor (every 2h) was the worst offender (162 finance notifications); daily_briefing created admin notification unconditionally even when nothing happened

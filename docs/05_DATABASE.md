@@ -20,6 +20,8 @@ No full migration framework. Lightweight compatibility repairs exist for columns
 | role | TEXT | `admin` / `it_manager` / `finance_manager` / `employee` |
 | enabled | BOOLEAN | |
 | is_demo | BOOLEAN | demo users hidden from User Management table |
+| telegram_chat_id | INTEGER NULL | Telegram chat ID for two-way bot (Phase A) |
+| telegram_registered_at | TEXT NULL | ISO datetime when Telegram was linked |
 | created_at | TEXT | ISO datetime |
 
 ### `sessions`
@@ -204,3 +206,12 @@ Secrets (tokens) are sanitised before returning to the frontend.
 
 ### `message_templates`
 Seeded communication templates (vendor billing reminder, expense approval, etc.).
+
+### `telegram_registration_codes`
+| Column | Type | Notes |
+|--------|------|-------|
+| code | TEXT PK | 6-digit one-time code |
+| user_id | INTEGER FK → users | |
+| created_at | TEXT | ISO datetime |
+| expires_at | TEXT | ISO datetime (10 min after creation) |
+| used | INTEGER | 0 = valid, 1 = used/expired |

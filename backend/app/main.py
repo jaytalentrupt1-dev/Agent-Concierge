@@ -162,6 +162,16 @@ def create_app(database_path: str | None = None) -> FastAPI:
     def _stop_scheduler() -> None:
         stop_scheduler()
 
+    @app.on_event("startup")
+    def _start_telegram_listener() -> None:
+        from app.services.telegram_listener import start_listener
+        start_listener(str(settings.database_path))
+
+    @app.on_event("shutdown")
+    def _stop_telegram_listener() -> None:
+        from app.services.telegram_listener import stop_listener
+        stop_listener()
+
     def current_token(authorization: str | None = Header(default=None)) -> str:
         if not authorization or not authorization.startswith("Bearer "):
             raise HTTPException(status_code=401, detail="Login required")
@@ -4193,6 +4203,63 @@ def create_app(database_path: str | None = None) -> FastAPI:
             "✅ <b>Conci Agent Test</b>\nTelegram integration confirmed from Agent Concierge."
         )
         return result
+
+    # ── Telegram two-way registration endpoints (Phase A) ────────────────────
+
+    @app.post("/api/telegram/register/start")
+    def telegram_register_start(user: dict = Depends(current_user)) -> dict:
+        """Generate a 6-digit one-time code the user sends to the bot to link their account."""
+        try:
+            import random
+            import os
+            from datetime import datetime, timedelta, timezone as _tz
+            code = f"{random.randint(100000, 999999)}"
+            expires_at = (datetime.now(_tz.utc) + timedelta(minutes=10)).isoformat()
+            repository.create_telegram_registration_code(
+                user_id=user["id"],
+                code=code,
+                expires_at=expires_at,
+            )
+            bot_username = os.environ.get("TELEGRAM_BOT_USERNAME", "").strip()
+            return {
+                "code": code,
+                "expires_in_seconds": 600,
+                "bot_username": bot_username or None,
+            }
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.get("/api/telegram/registration/status")
+    def telegram_registration_status(user: dict = Depends(current_user)) -> dict:
+        """Return whether the current user has a linked Telegram chat."""
+        try:
+            fresh = repository.get_user(user["id"])
+            chat_id = fresh.get("telegram_chat_id")
+            registered_at = fresh.get("telegram_registered_at")
+            from app.services.telegram_listener import is_running as listener_is_running
+            return {
+                "registered": chat_id is not None,
+                "telegram_chat_id": chat_id,
+                "registered_at": registered_at,
+                "listener_active": listener_is_running(),
+            }
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.post("/api/telegram/unregister")
+    def telegram_unregister(user: dict = Depends(current_user)) -> dict:
+        """Remove the Telegram link from the current user's account."""
+        try:
+            repository.clear_user_telegram_chat_id(user["id"])
+            repository.create_agent_log(
+                agent_name="telegram_listener",
+                status="info",
+                message=f"Telegram unlinked via web app: user {user['id']} ({user.get('email','')})",
+                data={"event": "web_unregister", "user_id": user["id"]},
+            )
+            return {"ok": True, "message": "Telegram account unlinked."}
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     @app.post("/api/tickets")
     def create_ticket(payload: TicketCreateRequest, user: dict = Depends(current_user)) -> dict:

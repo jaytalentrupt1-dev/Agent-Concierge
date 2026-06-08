@@ -18,6 +18,7 @@
 - **Agent toggle fix** — toggle actually pauses/resumes APScheduler jobs (was only local state before)
 - **Conci AI slot-filling fix** — whitelist-based abort guard; slot values no longer trigger false pivot-detection mid-flow
 - **Notification bell** — verified working with real data (polling, click handlers, mark-all); 24h dedup added to agents; spam cleaned (261 → 34 → 37 rows)
+- **Telegram Phase A** — two-way listener foundation: registration flow, /start /register /unregister /whoami, Settings UI panel, 3 API endpoints, DB migration
 - Telegram notifications on every agent run + Conci AI ticket creation
 - Conci AI chat panel — role-scoped, DeepInfra/OpenAI/local fallback, file upload, table responses
 - Multi-branch support — Pune / Ahmedabad / Vadodara / Noida across all major modules
@@ -29,6 +30,8 @@
 ## Pending ❌
 
 - ~~**Conci AI slot-filling bug**~~ — **Fixed 2026-06-03** (whitelist-based abort guard in `action_handler.py`)
+- **Telegram Phase B** — read commands via Telegram chat (show my tickets, expenses, etc.)
+- **Telegram Phase C** — write commands via Telegram chat (create ticket, approve expense, etc.)
 - Agent pause state persistence across backend restarts (currently in-memory only)
 - Real Google Calendar / Gmail integration (OAuth scaffold exists, not wired end-to-end)
 - Real WhatsApp / Twilio integration (mock mode only)

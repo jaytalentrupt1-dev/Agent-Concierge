@@ -469,6 +469,15 @@ class AdminRepository:
                     approval_reason TEXT,
                     details_json TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS telegram_registration_codes (
+                    code TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    used INTEGER NOT NULL DEFAULT 0,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
                 """
             )
             self._ensure_vendor_columns(conn)
@@ -481,6 +490,7 @@ class AdminRepository:
             self._ensure_travel_columns(conn)
             self._ensure_report_columns(conn)
             self._ensure_connector_tables(conn)
+            self._ensure_telegram_columns(conn)
 
     def _ensure_user_columns(self, conn) -> None:
         columns = {
@@ -490,6 +500,22 @@ class AdminRepository:
             return
         if "is_demo" not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0")
+
+    def _ensure_telegram_columns(self, conn) -> None:
+        """Add Telegram chat-ID columns to users (idempotent)."""
+        columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()
+        }
+        if not columns:
+            return
+        if "telegram_chat_id" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN telegram_chat_id INTEGER NULL DEFAULT NULL")
+        if "telegram_registered_at" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN telegram_registered_at TEXT NULL DEFAULT NULL")
+        # Index for fast lookup by chat_id (CREATE INDEX IF NOT EXISTS is idempotent)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_users_telegram_chat_id ON users(telegram_chat_id)"
+        )
 
     def _ensure_vendor_columns(self, conn) -> None:
         columns = {
@@ -3603,6 +3629,85 @@ class AdminRepository:
         item["status"] = self._normalize_task_status(item.get("status"))
         item["created_by_role"] = _normalize_role_value(item.get("created_by_role", ""))
         return item
+
+    # ── Telegram registration helpers ────────────────────────────────────────
+
+    def get_user_by_telegram_chat_id(self, chat_id: int) -> dict:
+        """Return user dict if a user is linked to this Telegram chat_id, else {}."""
+        with self.db.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM users WHERE telegram_chat_id = ?", (int(chat_id),)
+            ).fetchone()
+        return self._user_from_row(row) if row else {}
+
+    def set_user_telegram_chat_id(self, user_id: int, chat_id: int) -> dict:
+        """Link a Telegram chat_id to a user account. Returns updated user dict."""
+        now = utc_now()
+        with self.db.connection() as conn:
+            conn.execute(
+                "UPDATE users SET telegram_chat_id = ?, telegram_registered_at = ?, updated_at = ? WHERE id = ?",
+                (int(chat_id), now, now, int(user_id)),
+            )
+        return self.get_user(user_id)
+
+    def clear_user_telegram_chat_id(self, user_id: int) -> dict:
+        """Remove the Telegram link from a user account. Returns updated user dict."""
+        now = utc_now()
+        with self.db.connection() as conn:
+            conn.execute(
+                "UPDATE users SET telegram_chat_id = NULL, telegram_registered_at = NULL, updated_at = ? WHERE id = ?",
+                (now, int(user_id)),
+            )
+        return self.get_user(user_id)
+
+    def create_telegram_registration_code(self, user_id: int, code: str, expires_at: str) -> dict:
+        """Store a one-time registration code (expires in 10 min). Returns the code row."""
+        now = utc_now()
+        # Expire and invalidate any previous unused code for this user first
+        with self.db.connection() as conn:
+            conn.execute(
+                "UPDATE telegram_registration_codes SET used = 1 WHERE user_id = ? AND used = 0",
+                (int(user_id),),
+            )
+            conn.execute(
+                """
+                INSERT INTO telegram_registration_codes (code, user_id, created_at, expires_at, used)
+                VALUES (?, ?, ?, ?, 0)
+                """,
+                (str(code), int(user_id), now, str(expires_at)),
+            )
+        with self.db.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM telegram_registration_codes WHERE code = ?", (str(code),)
+            ).fetchone()
+        return dict(row) if row else {}
+
+    def get_telegram_registration_code(self, code: str) -> dict:
+        """Return the registration code row if it exists and has not expired, else {}."""
+        now = utc_now()
+        with self.db.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM telegram_registration_codes
+                WHERE code = ? AND expires_at > ? AND used = 0
+                """,
+                (str(code), now),
+            ).fetchone()
+        return dict(row) if row else {}
+
+    def use_telegram_registration_code(self, code: str, chat_id: int) -> None:
+        """Mark code as used and link the chat_id to the user. Idempotent."""
+        reg = self.get_telegram_registration_code(code)
+        if not reg:
+            return
+        self.set_user_telegram_chat_id(reg["user_id"], chat_id)
+        with self.db.connection() as conn:
+            conn.execute(
+                "UPDATE telegram_registration_codes SET used = 1 WHERE code = ?",
+                (str(code),),
+            )
+
+    # ── User row deserialiser ─────────────────────────────────────────────────
 
     def _user_from_row(self, row: Any) -> dict:
         item = dict(row)

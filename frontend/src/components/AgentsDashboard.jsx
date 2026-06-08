@@ -63,7 +63,7 @@ function Sparkline({ up = true }) {
     : "M0,8 L8,12 L16,10 L24,16 L32,14 L40,18 L48,16 L56,20";
   return (
     <svg width="56" height="24" viewBox="0 0 56 24" fill="none" style={{ flexShrink: 0 }}>
-      <polyline points={path} stroke="#EF4444" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+      <path d={path} stroke="#EF4444" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }

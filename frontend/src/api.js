@@ -615,3 +615,17 @@ export function toggleAgent(agentName, enabled) {
 export function testTelegram() {
   return request("/api/telegram/test", { method: "POST" });
 }
+
+// ── Telegram two-way registration (Phase A) ──────────────────────────────────
+
+export function telegramRegisterStart() {
+  return request("/api/telegram/register/start", { method: "POST" });
+}
+
+export function telegramRegistrationStatus() {
+  return request("/api/telegram/registration/status");
+}
+
+export function telegramUnregister() {
+  return request("/api/telegram/unregister", { method: "POST" });
+}

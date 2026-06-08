@@ -140,7 +140,10 @@ import {
   updateInventoryStatus,
   updateTravelRecord,
   updateVendor,
-  updateUser
+  updateUser,
+  telegramRegisterStart,
+  telegramRegistrationStatus,
+  telegramUnregister
 } from "./api";
 import {
   canAccessTab,
@@ -2865,12 +2868,6 @@ function DashboardAIAssistantPanel({
               </ul>
             )}
             <DashboardAIMessageTable table={message.table} />
-            {message.nextQuestion && (
-              <div className="dashboard-ai-followup">
-                <strong>Next question</strong>
-                <span>{message.nextQuestion}</span>
-              </div>
-            )}
             {message.createdRecordId && (
               <span className="dashboard-ai-record-link">Created: {message.createdRecordId}</span>
             )}
@@ -2879,9 +2876,6 @@ function DashboardAIAssistantPanel({
                 <button type="button" onClick={() => confirmAssistantAction(message)} disabled={sending}>Confirm</button>
                 <button type="button" onClick={() => cancelAssistantAction(message)} disabled={sending}>Cancel</button>
               </div>
-            )}
-            {formatDashboardAIMessageSource(message.source) && (
-              <span className="dashboard-ai-source">{formatDashboardAIMessageSource(message.source)}</span>
             )}
             <time>{message.time}</time>
           </article>
@@ -5068,9 +5062,6 @@ function TasksView({ currentUser, onChanged, onTaskDeleted, onTaskSaved, setErro
     <section className="tasks-page screen-stack">
       {toastMessage && <div className={toastType === "error" ? "toast-notification error" : "toast-notification"} role="status">{toastMessage}</div>}
       <div className="tasks-page-header">
-        <div className="page-title tasks-title">
-          <h1>Tasks</h1>
-        </div>
         <div className="task-summary-row" aria-label="Task summary">
           <TaskSummaryPill label="Total" value={summary.total} icon={ClipboardList} />
           <TaskSummaryPill label="Open" value={summary.open} icon={ListChecks} />
@@ -5088,7 +5079,6 @@ function TasksView({ currentUser, onChanged, onTaskDeleted, onTaskSaved, setErro
                 <h2>Task Directory</h2>
                 <span className="vendor-count-badge">{filteredTasks.length} Tasks</span>
               </div>
-              <p>Create, assign, and track Admin/IT tasks</p>
             </div>
           </div>
           <div className="task-action-row">
@@ -5883,7 +5873,6 @@ function TicketsView({ currentUser, onTicketSaved, onUpdated, setError, tickets 
                 <h2>Ticket Directory</h2>
                 <span className="vendor-count-badge">{filteredTickets.length} Tickets</span>
               </div>
-              <p>Manage IT and Admin tickets in one queue</p>
             </div>
           </div>
           <div className="ticket-action-row">
@@ -8353,16 +8342,18 @@ function InventoryImportHistory({ batches, canManage, currentUser, onDelete, onV
                       <Eye size={14} />
                       <span>View Items</span>
                     </button>
-                    <button
-                      className="table-action-button action-close"
-                      disabled={!canDeleteBatch || batch.status === "Deleted"}
-                      onClick={() => onDelete(batch)}
-                      title={canDeleteBatch ? "Delete import batch" : "Legacy cleanup requires Admin access"}
-                      type="button"
-                    >
-                      <Trash2 size={14} />
-                      <span>{batch.is_legacy_unbatched ? "Delete Unbatched" : "Delete Import"}</span>
-                    </button>
+                    {batch.status !== "Deleted" && (
+                      <button
+                        className="table-action-button action-close"
+                        disabled={!canDeleteBatch}
+                        onClick={() => onDelete(batch)}
+                        title={canDeleteBatch ? "Delete import batch" : "Legacy cleanup requires Admin access"}
+                        type="button"
+                      >
+                        <Trash2 size={14} />
+                        <span>{batch.is_legacy_unbatched ? "Delete Unbatched" : "Delete Import"}</span>
+                      </button>
+                    )}
                   </div>
                 </td>
               </tr>
@@ -9695,7 +9686,6 @@ function ExpenseView({ currentUser, expenses, onChanged, onExpenseSaved, setErro
             <span className="vendor-directory-icon"><DollarSign size={20} /></span>
             <div>
               <h2>All Expenses</h2>
-              <p>Manage company expenses and reports</p>
             </div>
           </div>
           <div className="ticket-action-row expense-action-row">
@@ -10439,7 +10429,6 @@ function ReportsView({ currentUser, onChanged, onReportDeleted, onReportSaved, r
             <span className="vendor-directory-icon"><FileText size={20} /></span>
             <div>
               <h2>Reports</h2>
-              <p>Import, export, and manage report files</p>
             </div>
           </div>
           <div className="ticket-action-row report-action-row">
@@ -11304,6 +11293,172 @@ function ProfileSettingsCard({ currentUser, health }) {
   );
 }
 
+// ── Telegram Integration Panel (Phase A) ────────────────────────────────────
+function TelegramPanel({ currentUser }) {
+  const [status, setStatus] = useState(null);   // null = loading
+  const [codeData, setCodeData] = useState(null); // { code, expires_in_seconds, bot_username }
+  const [busy, setBusy] = useState(false);
+  const [toast, setToast] = useState(null);
+  const pollRef = useRef(null);
+
+  async function loadStatus() {
+    try {
+      const s = await telegramRegistrationStatus();
+      setStatus(s);
+      // If we have a code shown and the user just registered, clear the code display
+      if (s.registered && codeData) setCodeData(null);
+    } catch (_) {
+      // silently ignore — settings page may not have listener active
+    }
+  }
+
+  useEffect(() => {
+    loadStatus();
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, []);
+
+  // Auto-poll every 5s while a code is being shown so UI updates when user registers via Telegram
+  useEffect(() => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    if (codeData && !status?.registered) {
+      pollRef.current = setInterval(loadStatus, 5000);
+    }
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [codeData, status?.registered]);
+
+  async function handleConnect() {
+    setBusy(true);
+    setToast(null);
+    try {
+      const data = await telegramRegisterStart();
+      setCodeData(data);
+    } catch (err) {
+      setToast({ ok: false, msg: apiErrorMessage(err) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDisconnect() {
+    setBusy(true);
+    setToast(null);
+    try {
+      await telegramUnregister();
+      setCodeData(null);
+      await loadStatus();
+      setToast({ ok: true, msg: "Telegram disconnected." });
+    } catch (err) {
+      setToast({ ok: false, msg: apiErrorMessage(err) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const isRegistered = status?.registered;
+  const registeredAt = status?.registered_at ? status.registered_at.slice(0, 10) : null;
+  const botUsername = codeData?.bot_username;
+
+  return (
+    <section className="dashboard-card" style={{ marginTop: "24px" }}>
+      <div className="section-heading" style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "16px" }}>
+        <MessageCircle size={18} color="#EF4444" />
+        <h2 style={{ margin: 0 }}>Telegram Integration</h2>
+        {status?.listener_active && (
+          <span className="am-status-pill running" style={{ fontSize: "11px" }}>Listener Active</span>
+        )}
+      </div>
+
+      {toast && (
+        <div className={`connector-toast ${toast.ok ? "ok" : "err"}`} style={{ marginBottom: "12px" }}>
+          {toast.msg}
+        </div>
+      )}
+
+      {isRegistered ? (
+        // ── STATE B: Connected ────────────────────────────────────────────────
+        <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+          <p style={{ margin: 0, color: "var(--text-secondary)" }}>
+            ✅ <strong>Connected</strong> — Telegram chat linked
+            {registeredAt ? ` since ${registeredAt}` : ""}.
+            You can now message the bot directly on Telegram.
+          </p>
+          <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+            <button
+              className="icon-button secondary"
+              onClick={handleDisconnect}
+              disabled={busy}
+            >
+              Disconnect
+            </button>
+            {botUsername && (
+              <a
+                href={`https://t.me/${botUsername}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="primary-button"
+                style={{ textDecoration: "none", fontSize: "13px" }}
+              >
+                Open @{botUsername}
+              </a>
+            )}
+          </div>
+        </div>
+      ) : codeData ? (
+        // ── Showing code, waiting for user to /register ───────────────────────
+        <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+          <p style={{ margin: 0, color: "var(--text-secondary)" }}>
+            Your one-time code expires in <strong>10 minutes</strong>. Follow these steps:
+          </p>
+          <ol style={{ margin: 0, paddingLeft: "20px", color: "var(--text-secondary)", lineHeight: "1.8" }}>
+            <li>Open Telegram and search for <strong>@{botUsername || "your bot"}</strong></li>
+            <li>Send the bot this message:</li>
+          </ol>
+          <div style={{
+            background: "var(--input-bg, #141414)",
+            border: "1px solid var(--border-color)",
+            borderRadius: "8px",
+            padding: "12px 16px",
+            fontFamily: "monospace",
+            fontSize: "16px",
+            letterSpacing: "2px",
+            color: "#EF4444",
+            fontWeight: 700,
+            userSelect: "all",
+          }}>
+            /register {codeData.code}
+          </div>
+          <p style={{ margin: 0, fontSize: "12px", color: "var(--text-muted)" }}>
+            ⏳ This page will automatically update when you complete registration in Telegram.
+          </p>
+          <button
+            className="icon-button secondary"
+            onClick={() => { setCodeData(null); setToast(null); }}
+            style={{ alignSelf: "flex-start" }}
+          >
+            Cancel
+          </button>
+        </div>
+      ) : (
+        // ── STATE A: Not connected ────────────────────────────────────────────
+        <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+          <p style={{ margin: 0, color: "var(--text-secondary)" }}>
+            Link your Telegram account to query Agent Concierge directly from Telegram chat.
+          </p>
+          <button
+            className="primary-button"
+            onClick={handleConnect}
+            disabled={busy}
+            style={{ alignSelf: "flex-start" }}
+          >
+            <MessageCircle size={14} />
+            {busy ? "Generating code…" : "Connect Telegram"}
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function SettingsView({ currentUser, health, onChanged, setError, users }) {
   const isAdmin = currentUser.role === "admin";
   const [createOpen, setCreateOpen] = useState(false);
@@ -11506,6 +11661,7 @@ function SettingsView({ currentUser, health, onChanged, setError, users }) {
         }}
         onSendTest={(connector) => setConnectorModal({ ...connector, sendTest: true })}
       />
+      <TelegramPanel currentUser={currentUser} />
       {connectorToast && <div className="toast-notification" role="status">{connectorToast}</div>}
       {isAdmin && (
         <>

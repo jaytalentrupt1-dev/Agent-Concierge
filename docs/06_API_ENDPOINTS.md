@@ -170,7 +170,10 @@ All routes defined in `backend/app/main.py` inside the `create_app()` factory.
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/api/telegram/test` | Admin | Send test Telegram message |
+| POST | `/api/telegram/test` | Admin | Send test Telegram message (outbound) |
+| POST | `/api/telegram/register/start` | User | Generate 6-digit registration code (10 min TTL) → `{code, expires_in_seconds, bot_username}` |
+| GET | `/api/telegram/registration/status` | User | `{registered, telegram_chat_id, registered_at, listener_active}` |
+| POST | `/api/telegram/unregister` | User | Remove user's `telegram_chat_id` link |
 
 ---
 
