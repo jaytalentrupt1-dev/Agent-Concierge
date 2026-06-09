@@ -5544,3 +5544,188 @@ html:not([data-theme="dark"]) .skeleton-nav {
   background: #FFFFFF !important;
   border-bottom-color: #E4E4E7 !important;
 }
+
+/* ============================================================
+   SETTINGS PAGE — Rebuilt 2026-06-09
+   ============================================================ */
+
+/* ── connector-toast (used by TelegramPinPanel and TelegramPanel) ── */
+.connector-toast {
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid transparent;
+}
+.connector-toast.ok {
+  background: rgba(34, 197, 94, 0.12);
+  border-color: rgba(34, 197, 94, 0.3);
+  color: #22c55e;
+}
+.connector-toast.err {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #EF4444;
+}
+html:not([data-theme="dark"]) .connector-toast.ok {
+  background: rgba(34, 197, 94, 0.08) !important;
+  color: #16a34a !important;
+}
+html:not([data-theme="dark"]) .connector-toast.err {
+  background: rgba(239, 68, 68, 0.08) !important;
+}
+
+/* ── Settings card (matches dashboard-card pattern) ── */
+.settings-card {
+  background: var(--card-bg, #141414);
+  border: 1px solid var(--border-color, #27272a);
+  border-radius: 12px;
+  padding: 24px;
+  margin-top: 24px;
+}
+html:not([data-theme="dark"]) .settings-card {
+  background: #FFFFFF !important;
+  border-color: #E4E4E7 !important;
+}
+
+/* ── Card header row ── */
+.settings-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.settings-card-title {
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0 0 2px 0;
+  color: var(--text-primary, #FAFAFA);
+}
+html:not([data-theme="dark"]) .settings-card-title {
+  color: #09090B !important;
+}
+.settings-card-subtitle {
+  font-size: 12px;
+  color: var(--text-muted, #71717a);
+  margin: 0;
+  max-width: 520px;
+}
+
+/* ── Icon wrap (red-tinted circle) ── */
+.settings-icon-wrap {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: rgba(239, 68, 68, 0.10);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.settings-icon-wrap.sm {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+}
+html:not([data-theme="dark"]) .settings-icon-wrap {
+  background: rgba(239, 68, 68, 0.08) !important;
+}
+
+/* ── "5 Logs >" pill ── */
+.settings-logs-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px;
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  border-radius: 999px;
+  background: transparent;
+  color: #EF4444;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+.settings-logs-pill:hover {
+  background: rgba(239, 68, 68, 0.08);
+}
+
+/* ── Connector table cell — name with icon ── */
+.settings-connector-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.settings-connector-sub {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted, #71717a);
+  font-weight: 400;
+  margin-top: 1px;
+}
+
+/* ── Status chip (Not Connected / Mock Mode) ── */
+.settings-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.settings-status-chip.not-connected { color: #EF4444; }
+.settings-status-chip.mock-mode     { color: #EF4444; }
+.settings-status-chip.connected     { color: #22c55e; }
+
+/* ── Status dot ── */
+.settings-status-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.settings-status-chip.not-connected .settings-status-dot { background: #EF4444; }
+.settings-status-chip.mock-mode     .settings-status-dot { background: #EF4444; }
+.settings-status-chip.connected     .settings-status-dot { background: #22c55e; }
+/* Standalone dots (for Telegram status paragraph) */
+.settings-status-dot.connected     { background: #22c55e; width: 8px; height: 8px; border-radius: 50%; vertical-align: middle; }
+.settings-status-dot.disconnected  { background: #f59e0b; width: 8px; height: 8px; border-radius: 50%; vertical-align: middle; }
+.settings-status-dot.pending       { background: #f59e0b; width: 8px; height: 8px; border-radius: 50%; vertical-align: middle; }
+
+/* ── Action cell in connector table ── */
+.settings-action-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ── Bottom action bar (Connect / Send Test / Disconnect) ── */
+.settings-connector-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 16px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border-color, #27272a);
+  flex-wrap: wrap;
+}
+html:not([data-theme="dark"]) .settings-connector-actions {
+  border-top-color: #E4E4E7 !important;
+}
+
+/* ── Light-mode overrides for settings card table ── */
+html:not([data-theme="dark"]) .settings-card .vendor-table th,
+html:not([data-theme="dark"]) .settings-card .vendor-table td {
+  background: #FFFFFF !important;
+  border-color: #E4E4E7 !important;
+  color: #09090B !important;
+}
+html:not([data-theme="dark"]) .settings-card .vendor-table tr:hover td {
+  background: #F4F4F5 !important;
+}
+html:not([data-theme="dark"]) .settings-connector-sub {
+  color: #71717a !important;
+}

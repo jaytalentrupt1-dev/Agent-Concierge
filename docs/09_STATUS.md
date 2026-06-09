@@ -19,6 +19,11 @@
 - **Conci AI slot-filling fix** — whitelist-based abort guard; slot values no longer trigger false pivot-detection mid-flow
 - **Notification bell** — verified working with real data (polling, click handlers, mark-all); 24h dedup added to agents; spam cleaned (261 → 34 → 37 rows)
 - **Telegram Phase A** — two-way listener foundation: registration flow, /start /register /unregister /whoami, Settings UI panel, 3 API endpoints, DB migration
+- **Telegram Phase B** — read commands via Conci AI brain: classify → ToolExecutor → formatted HTML reply; /summary, /help; role-filtered; writes refused
+- **Telegram Phase C.1** — create_ticket via guided slot-filling (title→category→priority→branch→confirm→write); typed yes/no; 30-min session; /cancel; logs to agent_logs
+- **Telegram Phase C.2** — inline button infrastructure (callback_query); approve/reject expense; close ticket; typed yes/no fallback via PendingConfirmation; double-click safe; message editing removes buttons
+- **Telegram Phase C.3** — PIN security layer (PBKDF2, 3-attempt lockout 30 min); all write actions require PIN; create_task slot-filling; mark_task_done via inline button; update_ticket status + assign_ticket; PIN Settings UI (set/change/remove); 4 new API endpoints
+- **Settings page rebuild** — 4-section layout (Connectors mock, Telegram Integration inline, Telegram PIN gated on registration, Users display-only); all non-real actions → "Coming soon" toast
 - Telegram notifications on every agent run + Conci AI ticket creation
 - Conci AI chat panel — role-scoped, DeepInfra/OpenAI/local fallback, file upload, table responses
 - Multi-branch support — Pune / Ahmedabad / Vadodara / Noida across all major modules
@@ -30,8 +35,8 @@
 ## Pending ❌
 
 - ~~**Conci AI slot-filling bug**~~ — **Fixed 2026-06-03** (whitelist-based abort guard in `action_handler.py`)
-- **Telegram Phase B** — read commands via Telegram chat (show my tickets, expenses, etc.)
-- **Telegram Phase C** — write commands via Telegram chat (create ticket, approve expense, etc.)
+- ~~**Telegram Phase C.2**~~ — **Done 2026-06-08** (inline buttons + approve/reject expense + close ticket)
+- ~~**Telegram Phase C.3**~~ — **Done 2026-06-08**
 - Agent pause state persistence across backend restarts (currently in-memory only)
 - Real Google Calendar / Gmail integration (OAuth scaffold exists, not wired end-to-end)
 - Real WhatsApp / Twilio integration (mock mode only)

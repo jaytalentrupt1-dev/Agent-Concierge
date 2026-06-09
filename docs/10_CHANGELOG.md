@@ -4,6 +4,87 @@ Newest entries first. Add a new row at the top after every code change.
 
 ---
 
+### 2026-06-09 — Settings page rebuild (4-section design)
+**Files:** `frontend/src/App.jsx`, `frontend/src/styles/globals.css`
+**Why:** Replace legacy Settings page (multi-component, real CRUD) with a clean 4-section layout that matches the design system
+**What:**
+- `SettingsView` fully replaced — no new components, all logic inline
+- Section 1 — Connectors: Email + WhatsApp rows in a table; all actions (Connect/Configure, Send Test, Disconnect, gear, 3-dot) → "Coming soon" toast
+- Section 2 — Telegram Integration: real Phase A functionality inlined (no longer using `<TelegramPanel />`); register-code display with polling every 3s; disconnect; connected state with date + bot link
+- Section 3 — Telegram PIN: renders `<TelegramPinPanel />` (Phase C.3, unchanged) only when `tgRegistered === true`
+- Section 4 — Users (admin-only): display-only table with search; Add User, Filter, Edit, Delete, role-change dropdown, More → "Coming soon" toast
+- CSS added: `.settings-card`, `.settings-card-header`, `.settings-card-title`, `.settings-card-subtitle`, `.settings-icon-wrap (.sm)`, `.settings-logs-pill`, `.settings-connector-name`, `.settings-connector-sub`, `.settings-status-chip (.not-connected/.mock-mode/.connected)`, `.settings-status-dot (variants)`, `.settings-action-cell`, `.settings-connector-actions`, `.connector-toast (.ok/.err)` — all with dark + light mode overrides
+- `TelegramPanel` component remains in file (not called from SettingsView); `ConnectorsPanel`/`ConnectorConfigModal`/`UserManagement` remain in file (unused from SettingsView)
+- All write-capable paths removed from SettingsView — no accidental CRUD exposure
+
+---
+
+### 2026-06-08 — Phase C.3: PIN security layer + remaining write intents via Telegram
+**Files:** `admin_repository.py`, `telegram_state.py`, `main.py`, `telegram_router.py`, `telegram_listener.py`, `telegram_buttons.py`, `api.js`, `App.jsx`
+**Why:** Security layer for all Telegram write actions; remaining write intents (create_task, mark_task_done, update_ticket, assign_ticket)
+**What:**
+- `admin_repository.py`: 4 new PIN columns on users table (`telegram_pin_hash`, `telegram_pin_set_at`, `telegram_pin_failed_attempts`, `telegram_pin_locked_until`); PBKDF2-HMAC-SHA256 helpers `_hash_pin`/`_verify_pin` (stdlib only); 4 new repo methods: `set_telegram_pin`, `clear_telegram_pin`, `get_telegram_pin_status`, `verify_telegram_pin` (lockout after 3 failures, 30-min lock; never logs PIN)
+- `telegram_state.py`: new `PendingPinEntry` dataclass + store/get/clear with 5-min timeout
+- `main.py`: 4 PIN endpoints — `POST /api/telegram/pin` (set), `PUT` (change, requires old PIN), `DELETE` (remove), `GET` (status)
+- `telegram_router.py`: `require_pin_then_execute` central PIN gate (no PIN → execute directly; locked → reject; PIN set → store PendingPinEntry + prompt); `handle_pin_entry` verifies PIN + dispatches action; `_dispatch_write_action` maps intent → executor; C.1/C.2 retrofitted to call PIN gate; create_task slot-filling (title → assigned_role → due_date optional + /skip); mark_task_done button flow; update_ticket status + assign_ticket via regex
+- `telegram_listener.py`: 4-8 digit message → if PendingPinEntry active → route to `handle_pin_entry` before normal routing
+- `telegram_buttons.py`: `task_done_keyboard` (task:done:{id} + cancel)
+- `api.js` + `App.jsx`: `TelegramPinPanel` Settings section with Set/Change/Remove PIN modals; `telegramPinStatus/SetPin/ChangePin/RemovePin` API functions
+- PIN check on EVERY write — no exceptions; no PIN set → execute directly (opt-in security)
+- Phase A/B/C.1/C.2/Conci AI/outbound alerts all untouched
+
+---
+
+### 2026-06-08 — Phase C.2: inline buttons + approve/reject expense + close ticket via Telegram
+**Files:** `telegram_listener.py`, `telegram_buttons.py` (new), `telegram_service.py` (added `send_telegram_with_buttons`, `edit_telegram_message`, `answer_callback_query`), `telegram_router.py`, `telegram_state.py`
+**Why:** Users need to approve/reject expenses and close tickets directly from Telegram without opening the web app
+**What:**
+- `telegram_listener.py`: added `callback_query` path in `_handle_update` — extracts `callback_query_id`, looks up user by `telegram_chat_id`, calls `answer_callback_query` to dismiss spinner, routes to `handle_callback`
+- `telegram_buttons.py` (new): `expense_approval_keyboard`, `ticket_close_keyboard`, `remove_keyboard`, `parse_callback_data` — all callback_data strings stay under 64 bytes
+- `telegram_service.py`: added `send_telegram_with_buttons` (sendMessage + reply_markup), `edit_telegram_message` (editMessageText), `answer_callback_query` (answerCallbackQuery). Existing `send_telegram_sync` untouched.
+- `telegram_router.py`: added `handle_callback` dispatcher; `_send_expense_confirmation` / `_send_ticket_close_confirmation` helpers; `_execute_action_and_edit` (calls existing ToolExecutor, edits message, fires outbound alert); text-based triggers via `_RE_APPROVE/_RE_REJECT/_RE_CLOSE` regex; typed yes/no fallback checks `PendingConfirmation`; removed `approve_expense`/`ticket_status_update` from `_WRITE_INTENTS`; fixed missing `import os`; updated help text and expense formatter
+- `telegram_state.py`: added `PendingConfirmation` dataclass + store/get/clear helpers (separate from slot-filling sessions, same 30-min timeout)
+- Double-click safe: `clear_pending_confirmation` called before executing action; second click hits ToolExecutor which returns "already approved/rejected" error → shown gracefully
+- All write actions logged to agent_logs with `via: "button_or_typed"` field
+- Phase A, B, C.1, Conci AI sidebar, outbound alerts all untouched
+
+---
+
+### 2026-06-04 — Fixed: outbound Telegram alert fires after Telegram-initiated ticket creation
+**Files:** `backend/app/services/telegram_router.py`
+**Why:** Conci AI sidebar ticket creation fires `send_telegram_sync` alert; Telegram chat creation did not — inconsistent
+**What:** Added same `send_telegram_sync` call (identical format to `action_handler._maybe_notify_telegram`) immediately after successful `create_ticket` in `_handle_slot_filling`. User still receives the "✅ Ticket created" chat reply first; outbound alert follows via `TELEGRAM_CHAT_ID` channel.
+
+---
+
+### 2026-06-04 — Phase C.1: create_ticket via Telegram (slot-filling + confirmation)
+**Files:** `backend/app/services/telegram_state.py` (new), `backend/app/services/telegram_router.py`, `backend/app/services/telegram_listener.py`
+**Why:** First Telegram write operation — users can create tickets via guided chat
+**What:**
+- New `telegram_state.py` — in-memory `TelegramSession` store keyed by user_id; 30-min idle timeout; lazy cleanup on `get_session()`
+- `telegram_router.py`: session check at start of every message (intercepts non-command text); `create_ticket` removed from `_WRITE_INTENTS`; `_handle_slot_filling()` collects title → category → priority → branch; typed yes/no confirmation; real DB write via existing `ToolExecutor.create_ticket()`; `/cancel` mid-flow
+- `telegram_listener.py`: `/cancel` command handler; `/help` updated with "create ticket" entry
+- All events (session start, slots, confirm, success, cancel, error) logged to `agent_logs`
+- Phase A, Phase B, outbound alerts untouched
+
+---
+
+### 2026-06-04 — Phase B: Telegram read commands via Conci AI brain
+**Files:** `backend/app/services/telegram_router.py` (new), `backend/app/services/telegram_listener.py`
+**Why:** Registered users can now query Agent Concierge data directly from Telegram chat
+**What:**
+- New `telegram_router.py` — routes free-text messages through `ConciAgentIntentService.classify()`, executes via existing `ToolExecutor`, formats results as HTML Telegram messages
+- Supported read intents: tickets, tasks, expenses, vendors, inventory, travel; all role-filtered via ToolExecutor
+- `/summary` command → role-aware daily snapshot (open tickets, overdue tasks, pending expenses)
+- `/help` command → lists all available commands with role note
+- Write intents (`create_ticket`, `approve_expense`, etc.) → politely refused with "Phase C coming"
+- Unsupported intents → help text with suggestions
+- All queries logged to `agent_logs` with `agent_name="telegram_router"`
+- Responses split at 4096-char limit if needed
+- Phase A commands (/start /register /unregister /whoami) unchanged
+
+---
+
 ### 2026-06-04 — Two-way Telegram chat foundation (Phase A)
 **Files:** `backend/app/services/telegram_listener.py` (new), `backend/app/repositories/admin_repository.py`, `backend/app/main.py`, `frontend/src/api.js`, `frontend/src/App.jsx`
 **Why:** Enable users to query Agent Concierge via Telegram chat in addition to receiving outbound alerts

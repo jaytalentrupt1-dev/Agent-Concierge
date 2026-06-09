@@ -58,7 +58,137 @@ Users must link their Telegram account to their web-app account before the bot r
 | `/register <code>` | Runs registration flow; links chat to account |
 | `/unregister` | Removes link; confirms unlinked |
 | `/whoami` | Shows linked user name, role, linked-since date |
-| Any other text | Registered: Phase A placeholder. Unregistered: registration instructions. |
+| `/summary` | Role-aware daily snapshot (Phase B) |
+| `/help` | Lists all supported read commands (Phase B) |
+| Any free-text | Classified by Conci AI → fetch + format (Phase B). Writes refused. |
+
+### Phase C.1 — create_ticket via slot-filling
+
+Send "create ticket" (or "new ticket", "raise ticket") to start a guided flow:
+
+```
+User:  create a ticket
+Bot:   🎫 Let's create a ticket, Admin.
+       What should the title be?  (Send /cancel to stop.)
+
+User:  Laptop screen broken
+Bot:   What category? (e.g. Hardware, Software, General)
+
+User:  Hardware
+Bot:   What priority? (Low / Medium / High)
+
+User:  High
+Bot:   Which branch? (Pune / Ahmedabad / Vadodara / Noida)
+
+User:  Pune
+Bot:   Please confirm this ticket:
+       Title: Laptop screen broken
+       Category: Hardware
+       Priority: High
+       Branch: Pune
+       Reply yes to create or no to cancel.
+
+User:  yes
+Bot:   ✅ Ticket created!
+       ID: #IT-1015
+       Title: Laptop screen broken
+       Status: Open
+       Branch: Pune
+       View in the web app for full details.
+```
+
+- Sessions are in-memory with a **30-minute idle timeout**
+- Send `/cancel` at any point to abort
+- All other Telegram commands (/start, /help, etc.) still work mid-flow (handled by listener before router)
+- Session state is independent of Conci AI sidebar state
+
+### Phase C.2 — approve/reject expense + close ticket via inline buttons
+
+Send "approve expense EXP-1001" (or "reject expense EXP-1001", "close ticket IT-1013"):
+
+```
+User:  approve expense EXP-1001
+Bot:   Approve or reject this expense?
+
+       ID: EXP-1001
+       Amount: Rs.12,450
+       Category: Travel
+       Submitted by: Shivam Raj
+       Status: Pending Approval
+
+       [✅ Approve]  [❌ Reject]
+       [🚫 Cancel]
+
+User: [clicks ✅ Approve]
+Bot:  ✅ EXP-1001 approved.
+```
+
+Typed fallback (no button click needed):
+```
+User:  approve expense EXP-1002
+Bot:   [confirmation message with buttons]
+User:  yes
+Bot:   ✅ EXP-1002 approved.    ← message updates, buttons removed
+```
+
+- `approve_expense` / `reject_expense` → `admin` or `finance_manager` only
+- `close_ticket` → `admin` or `it_manager` only
+- Double-click safe: second button press shows "already approved" from ToolExecutor
+- Old message (>48h) edit failure falls back to a fresh reply
+- All actions logged to `agent_logs` with `via: "button_or_typed"` field
+
+#### Callback data format (≤ 64 bytes)
+
+| Action | callback_data |
+|--------|---------------|
+| Approve expense | `exp:approve:{expense_id}` |
+| Reject expense | `exp:reject:{expense_id}` |
+| Close ticket | `tkt:close:{ticket_id}` |
+| Cancel | `cancel:{entity_id}` |
+
+#### New files added
+- `backend/app/services/telegram_buttons.py` — keyboard builders + `parse_callback_data`
+- New functions in `telegram_service.py`: `send_telegram_with_buttons`, `edit_telegram_message`, `answer_callback_query`
+
+### Phase B — Read commands
+
+Free-text is classified by `ConciAgentIntentService.classify()` then executed via `ToolExecutor` with the linked user's role for filtering.
+
+**Supported intents:** `open_tickets`, `my_tickets`, `recent_tickets`, `open_tasks`, `my_tasks`, `overdue_tasks`, `pending_approvals`, `pending_expenses`, `expense_summary`, `active_vendors`, `vendor_billing`, `inventory_summary`, `inventory_in_use`, and more.
+
+**Write intents** (`create_ticket`, `approve_expense`, etc.) return: *"I can't make changes from Telegram yet — Phase C is coming."*
+
+**Unsupported text** returns: help suggestions.
+
+All queries logged to `agent_logs` with `agent_name="telegram_router"`.
+
+### Response format
+
+HTML parse mode. Responses are capped at 10 items and split at 4096 chars if needed.
+
+**Example — "recent tickets":**
+```
+🎫 Recent Tickets (10)
+
+• IT-1013 — test ticket for slot filling
+  Overdue · high · Noida
+• IT-1012 — laptop screen broken
+  Overdue · high · Pune
+...
+
+Open the web app for full details.
+```
+
+**Example — "/summary" (admin):**
+```
+📊 Today's Summary
+
+🎫 Open Tickets: 0 (13 overdue)
+✅ Open Tasks: 3 (6 overdue)
+💰 Pending Expenses: 1
+
+Updated: 2026-06-08 16:29 UTC
+```
 
 ### API endpoints
 

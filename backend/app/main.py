@@ -4261,6 +4261,87 @@ def create_app(database_path: str | None = None) -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+    # ── Telegram PIN endpoints (Phase C.3) ───────────────────────────────────
+
+    @app.post("/api/telegram/pin")
+    def telegram_set_pin(payload: dict, user: dict = Depends(current_user)) -> dict:
+        """Set a new Telegram write-action PIN (4-8 digits)."""
+        import re as _re
+        try:
+            pin = str(payload.get("pin", "")).strip()
+            if not _re.match(r"^\d{4,8}$", pin):
+                raise HTTPException(status_code=400, detail="PIN must be 4–8 digits.")
+            status_data = repository.get_telegram_pin_status(user["id"])
+            if status_data["has_pin"]:
+                raise HTTPException(status_code=409, detail="PIN already set. Use PUT to change it.")
+            repository.set_telegram_pin(user["id"], pin)
+            repository.create_agent_log(
+                agent_name="telegram_listener",
+                status="info",
+                message=f"Telegram PIN set: user {user['id']}",
+                data={"event": "pin_set", "user_id": user["id"]},
+            )
+            return {"ok": True, "message": "PIN set successfully."}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.put("/api/telegram/pin")
+    def telegram_change_pin(payload: dict, user: dict = Depends(current_user)) -> dict:
+        """Change the Telegram PIN (requires current PIN verification)."""
+        import re as _re
+        try:
+            old_pin = str(payload.get("old_pin", "")).strip()
+            new_pin = str(payload.get("new_pin", "")).strip()
+            if not _re.match(r"^\d{4,8}$", new_pin):
+                raise HTTPException(status_code=400, detail="New PIN must be 4–8 digits.")
+            result = repository.verify_telegram_pin(user["id"], old_pin)
+            if not result.get("ok"):
+                if result.get("locked"):
+                    raise HTTPException(status_code=403, detail="Account locked. Try again later.")
+                raise HTTPException(status_code=403, detail="Current PIN is incorrect.")
+            repository.set_telegram_pin(user["id"], new_pin)
+            repository.create_agent_log(
+                agent_name="telegram_listener",
+                status="info",
+                message=f"Telegram PIN changed: user {user['id']}",
+                data={"event": "pin_changed", "user_id": user["id"]},
+            )
+            return {"ok": True, "message": "PIN changed successfully."}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.delete("/api/telegram/pin")
+    def telegram_remove_pin(user: dict = Depends(current_user)) -> dict:
+        """Remove the Telegram PIN."""
+        try:
+            repository.clear_telegram_pin(user["id"])
+            repository.create_agent_log(
+                agent_name="telegram_listener",
+                status="info",
+                message=f"Telegram PIN removed: user {user['id']}",
+                data={"event": "pin_removed", "user_id": user["id"]},
+            )
+            return {"ok": True, "message": "PIN removed."}
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.get("/api/telegram/pin")
+    def telegram_pin_status_endpoint(user: dict = Depends(current_user)) -> dict:
+        """Return PIN status for the current user."""
+        try:
+            s = repository.get_telegram_pin_status(user["id"])
+            return {
+                "has_pin": s["has_pin"],
+                "locked": s["locked"],
+                "locked_until": s["locked_until"],
+            }
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
     @app.post("/api/tickets")
     def create_ticket(payload: TicketCreateRequest, user: dict = Depends(current_user)) -> dict:
         assignment = ticket_assignment(payload.ticket_type, payload.category)

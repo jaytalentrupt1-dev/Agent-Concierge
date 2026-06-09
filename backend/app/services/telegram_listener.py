@@ -1,4 +1,4 @@
-"""Two-way Telegram listener — Phase A foundation.
+"""Two-way Telegram listener — Phase A + B.
 
 Polls Telegram's getUpdates API (long-polling) in a daemon thread.
 Handles:
@@ -6,7 +6,9 @@ Handles:
   /register   — link Telegram chat to a web-app account via 6-digit code
   /unregister — remove the link
   /whoami     — show linked account info
-  <any other> — Phase A placeholder reply for registered users,
+  /summary    — daily summary (Phase B)
+  /help       — list available commands (Phase B)
+  <any other> — routes through Conci AI intent pipeline (Phase B) for registered users,
                 registration instructions for unregistered users
 
 Environment variables required (add to .env, do NOT auto-edit):
@@ -84,6 +86,31 @@ def _reply(token: str, chat_id: int, text: str) -> None:
 def _handle_update(update: dict, token: str, database_path: str) -> None:
     """Process a single Telegram update. All exceptions are caught internally."""
     try:
+        # ── callback_query — inline button click (Phase C.2) ─────────────────
+        callback_query = update.get("callback_query")
+        if callback_query:
+            cbq_id: str = callback_query.get("id", "")
+            from_user: dict = callback_query.get("from", {})
+            cbq_chat_id: int = callback_query.get("message", {}).get("chat", {}).get("id", 0)
+            message_id: int = callback_query.get("message", {}).get("message_id", 0)
+            callback_data: str = callback_query.get("data", "")
+
+            # Always acknowledge the button click first (removes spinner)
+            from app.services.telegram_service import answer_callback_query
+            answer_callback_query(cbq_id)
+
+            from app.repositories.admin_repository import AdminRepository
+            repo = AdminRepository(database_path)
+            cbq_user = repo.get_user_by_telegram_chat_id(cbq_chat_id)
+
+            if not cbq_user:
+                _reply(token, cbq_chat_id, "❓ Not registered. Send /start to link your account.")
+                return
+
+            from app.services.telegram_router import handle_callback
+            handle_callback(cbq_user, callback_data, message_id, cbq_chat_id, database_path)
+            return
+
         message = update.get("message") or update.get("edited_message")
         if not message:
             return
@@ -206,7 +233,49 @@ def _handle_update(update: dict, token: str, database_path: str) -> None:
                 ))
             return
 
-        # ── Any other message ─────────────────────────────────────────────────
+        # ── /cancel — abort active slot-filling session (Phase C.1) ─────────────
+        if text.lower().startswith("/cancel"):
+            user = repo.get_user_by_telegram_chat_id(chat_id)
+            if not user:
+                _reply(token, chat_id, "ℹ️ Nothing to cancel.")
+                return
+            from app.services.telegram_state import get_session, clear_session
+            session = get_session(user["id"])
+            if session:
+                clear_session(user["id"])
+                _reply(token, chat_id, "❌ Cancelled. Nothing was created.")
+            else:
+                _reply(token, chat_id, "ℹ️ Nothing to cancel.")
+            return
+
+        # ── /summary — daily snapshot (Phase B) ──────────────────────────────
+        if text.lower().startswith("/summary"):
+            user = repo.get_user_by_telegram_chat_id(chat_id)
+            if not user:
+                _reply(token, chat_id, (
+                    "❓ Please link your account first.\n"
+                    "Use <code>/start</code> to learn how."
+                ))
+                return
+            from app.services.telegram_router import handle_telegram_message
+            handle_telegram_message(user, "daily summary", token, chat_id, database_path)
+            return
+
+        # ── /help — list available commands (Phase B) ─────────────────────────
+        if text.lower().startswith("/help"):
+            user = repo.get_user_by_telegram_chat_id(chat_id)
+            if not user:
+                _reply(token, chat_id, (
+                    "👋 <b>Agent Concierge Bot</b>\n\n"
+                    "Commands: /start /register /unregister\n\n"
+                    "Link your account to unlock full query access."
+                ))
+                return
+            from app.services.telegram_router import handle_telegram_message
+            handle_telegram_message(user, "help", token, chat_id, database_path)
+            return
+
+        # ── Any other message — Phase B / C router ───────────────────────────
         user = repo.get_user_by_telegram_chat_id(chat_id)
         if not user:
             _reply(token, chat_id, (
@@ -218,13 +287,17 @@ def _handle_update(update: dict, token: str, database_path: str) -> None:
                 "Or send /start for more details."
             ))
         else:
-            user_name = user.get("name", "User")
-            _reply(token, chat_id, (
-                f"✅ Hello <b>{user_name}</b>. Got your message: <i>“{text[:100]}”</i>\n\n"
-                "Phase B (read commands) and Phase C (write commands) are coming soon. "
-                "For now, I can only acknowledge your messages.\n\n"
-                "Try /whoami to see your linked account."
-            ))
+            # Phase C.3: intercept 4-8 digit messages when PIN entry is pending
+            import re as _re
+            if _re.match(r"^\d{4,8}$", text):
+                from app.services.telegram_state import get_pending_pin_entry
+                if get_pending_pin_entry(user["id"]):
+                    from app.services.telegram_router import handle_pin_entry
+                    handle_pin_entry(user, text, token, chat_id, database_path)
+                    return
+            # Phase B+: route through the Conci AI intent pipeline
+            from app.services.telegram_router import handle_telegram_message
+            handle_telegram_message(user, text, token, chat_id, database_path)
 
     except Exception as exc:  # noqa: BLE001
         logger.error("Telegram handle_update error: %s", exc, exc_info=True)

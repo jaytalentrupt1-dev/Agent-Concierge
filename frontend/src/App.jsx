@@ -143,7 +143,11 @@ import {
   updateUser,
   telegramRegisterStart,
   telegramRegistrationStatus,
-  telegramUnregister
+  telegramUnregister,
+  telegramPinStatus,
+  telegramSetPin,
+  telegramChangePin,
+  telegramRemovePin,
 } from "./api";
 import {
   canAccessTab,
@@ -11293,6 +11297,207 @@ function ProfileSettingsCard({ currentUser, health }) {
   );
 }
 
+// ── Telegram PIN Panel (Phase C.3) ──────────────────────────────────────────
+function TelegramPinPanel() {
+  const [pinStatus, setPinStatus] = useState(null); // null = loading
+  const [busy, setBusy] = useState(false);
+  const [toast, setToast] = useState(null);
+  const [modal, setModal] = useState(null); // "set" | "change" | "remove"
+  const [pin, setPin] = useState("");
+  const [oldPin, setOldPin] = useState("");
+  const [newPin, setNewPin] = useState("");
+
+  async function loadStatus() {
+    try {
+      const s = await telegramPinStatus();
+      setPinStatus(s);
+    } catch (_) {}
+  }
+
+  useEffect(() => { loadStatus(); }, []);
+
+  function closeModal() {
+    setModal(null);
+    setPin(""); setOldPin(""); setNewPin("");
+    setToast(null);
+  }
+
+  async function handleSetPin(e) {
+    e.preventDefault();
+    if (!/^\d{4,8}$/.test(pin)) { setToast({ ok: false, msg: "PIN must be 4–8 digits." }); return; }
+    setBusy(true);
+    try {
+      await telegramSetPin(pin);
+      await loadStatus();
+      closeModal();
+      setToast({ ok: true, msg: "PIN set. All write actions via Telegram now require it." });
+    } catch (err) {
+      setToast({ ok: false, msg: apiErrorMessage(err) });
+    } finally { setBusy(false); }
+  }
+
+  async function handleChangePin(e) {
+    e.preventDefault();
+    if (!/^\d{4,8}$/.test(newPin)) { setToast({ ok: false, msg: "New PIN must be 4–8 digits." }); return; }
+    setBusy(true);
+    try {
+      await telegramChangePin(oldPin, newPin);
+      await loadStatus();
+      closeModal();
+      setToast({ ok: true, msg: "PIN changed successfully." });
+    } catch (err) {
+      setToast({ ok: false, msg: apiErrorMessage(err) });
+    } finally { setBusy(false); }
+  }
+
+  async function handleRemovePin(e) {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await telegramRemovePin();
+      await loadStatus();
+      closeModal();
+      setToast({ ok: true, msg: "PIN removed. Write actions will execute without a PIN." });
+    } catch (err) {
+      setToast({ ok: false, msg: apiErrorMessage(err) });
+    } finally { setBusy(false); }
+  }
+
+  const hasPin = pinStatus?.has_pin;
+
+  return (
+    <section className="dashboard-card" style={{ marginTop: "24px" }}>
+      <div className="section-heading" style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "16px" }}>
+        <Lock size={18} color="#EF4444" />
+        <h2 style={{ margin: 0 }}>Telegram Write PIN</h2>
+        {hasPin && (
+          <span className="am-status-pill running" style={{ fontSize: "11px" }}>PIN Active</span>
+        )}
+      </div>
+
+      {toast && (
+        <div className={`connector-toast ${toast.ok ? "ok" : "err"}`} style={{ marginBottom: "12px" }}>
+          {toast.msg}
+        </div>
+      )}
+
+      {pinStatus === null ? (
+        <p style={{ color: "var(--text-muted)", margin: 0 }}>Loading…</p>
+      ) : hasPin ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+          <p style={{ margin: 0, color: "var(--text-secondary)" }}>
+            🔐 <strong>PIN is set.</strong> Every write action on Telegram (create ticket, approve expense, etc.)
+            requires your PIN before executing.
+          </p>
+          {pinStatus.locked && (
+            <p style={{ margin: 0, color: "#EF4444", fontSize: "13px" }}>
+              🔒 Account locked until {pinStatus.locked_until?.slice(0, 16).replace("T", " ")} UTC
+            </p>
+          )}
+          <div style={{ display: "flex", gap: "10px" }}>
+            <button className="icon-button secondary" onClick={() => { setModal("change"); setToast(null); }}>
+              Change PIN
+            </button>
+            <button className="icon-button secondary" style={{ color: "#EF4444" }}
+              onClick={() => { setModal("remove"); setToast(null); }}>
+              Remove PIN
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+          <p style={{ margin: 0, color: "var(--text-secondary)" }}>
+            Add a 4–8 digit PIN to protect write actions (create ticket, approve expenses, etc.)
+            from your Telegram account.
+          </p>
+          <button className="primary-button" style={{ alignSelf: "flex-start" }}
+            onClick={() => { setModal("set"); setToast(null); }}>
+            <Lock size={14} />
+            Set PIN
+          </button>
+        </div>
+      )}
+
+      {/* ── Set PIN modal ───────────────────────────────────────────────── */}
+      {modal === "set" && (
+        <div className="modal-overlay" onClick={closeModal}>
+          <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: "360px" }}>
+            <h3 style={{ marginTop: 0 }}>Set Telegram PIN</h3>
+            <p style={{ color: "var(--text-secondary)", fontSize: "13px", marginTop: 0 }}>
+              Enter a 4–8 digit PIN. You'll type this in Telegram to confirm write actions.
+            </p>
+            {toast && <div className={`connector-toast ${toast.ok ? "ok" : "err"}`} style={{ marginBottom: "10px" }}>{toast.msg}</div>}
+            <form onSubmit={handleSetPin} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+              <input
+                type="password" inputMode="numeric" pattern="\d{4,8}" maxLength={8}
+                placeholder="4–8 digit PIN"
+                value={pin} onChange={e => setPin(e.target.value.replace(/\D/g, ""))}
+                className="form-input" autoFocus
+              />
+              <div style={{ display: "flex", gap: "10px" }}>
+                <button type="submit" className="primary-button" disabled={busy}>
+                  {busy ? "Saving…" : "Set PIN"}
+                </button>
+                <button type="button" className="icon-button secondary" onClick={closeModal}>Cancel</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Change PIN modal ─────────────────────────────────────────────── */}
+      {modal === "change" && (
+        <div className="modal-overlay" onClick={closeModal}>
+          <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: "360px" }}>
+            <h3 style={{ marginTop: 0 }}>Change Telegram PIN</h3>
+            {toast && <div className={`connector-toast ${toast.ok ? "ok" : "err"}`} style={{ marginBottom: "10px" }}>{toast.msg}</div>}
+            <form onSubmit={handleChangePin} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+              <input
+                type="password" inputMode="numeric" pattern="\d{4,8}" maxLength={8}
+                placeholder="Current PIN"
+                value={oldPin} onChange={e => setOldPin(e.target.value.replace(/\D/g, ""))}
+                className="form-input" autoFocus
+              />
+              <input
+                type="password" inputMode="numeric" pattern="\d{4,8}" maxLength={8}
+                placeholder="New PIN (4–8 digits)"
+                value={newPin} onChange={e => setNewPin(e.target.value.replace(/\D/g, ""))}
+                className="form-input"
+              />
+              <div style={{ display: "flex", gap: "10px" }}>
+                <button type="submit" className="primary-button" disabled={busy}>
+                  {busy ? "Saving…" : "Change PIN"}
+                </button>
+                <button type="button" className="icon-button secondary" onClick={closeModal}>Cancel</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Remove PIN modal ─────────────────────────────────────────────── */}
+      {modal === "remove" && (
+        <div className="modal-overlay" onClick={closeModal}>
+          <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: "360px" }}>
+            <h3 style={{ marginTop: 0 }}>Remove Telegram PIN</h3>
+            <p style={{ color: "var(--text-secondary)", fontSize: "13px", marginTop: 0 }}>
+              Write actions will no longer require a PIN confirmation on Telegram.
+            </p>
+            {toast && <div className={`connector-toast ${toast.ok ? "ok" : "err"}`} style={{ marginBottom: "10px" }}>{toast.msg}</div>}
+            <form onSubmit={handleRemovePin} style={{ display: "flex", gap: "10px" }}>
+              <button type="submit" className="primary-button" disabled={busy}
+                style={{ background: "#EF4444" }}>
+                {busy ? "Removing…" : "Remove PIN"}
+              </button>
+              <button type="button" className="icon-button secondary" onClick={closeModal}>Cancel</button>
+            </form>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 // ── Telegram Integration Panel (Phase A) ────────────────────────────────────
 function TelegramPanel({ currentUser }) {
   const [status, setStatus] = useState(null);   // null = loading
@@ -11461,211 +11666,327 @@ function TelegramPanel({ currentUser }) {
 
 function SettingsView({ currentUser, health, onChanged, setError, users }) {
   const isAdmin = currentUser.role === "admin";
-  const [createOpen, setCreateOpen] = useState(false);
-  const [connectors, setConnectors] = useState([]);
-  const [googleEmailConfigured, setGoogleEmailConfigured] = useState(false);
-  const [communicationLogs, setCommunicationLogs] = useState([]);
-  const [connectorModal, setConnectorModal] = useState(null);
-  const [connectorToast, setConnectorToast] = useState("");
-  const [form, setForm] = useState({ name: "", email: "", password: "", confirmPassword: "", role: "employee" });
-  const [formErrors, setFormErrors] = useState({});
-  const [saving, setSaving] = useState(false);
-  const userFormRef = useRef(null);
+
+  // ── Coming-soon toast ────────────────────────────────────────────────────
+  const [csTst, setCsTst] = useState(null);
+  const csTstRef = useRef(null);
+  function showComingSoon() {
+    setCsTst("Coming soon");
+    if (csTstRef.current) clearTimeout(csTstRef.current);
+    csTstRef.current = setTimeout(() => setCsTst(null), 2000);
+  }
+
+  // ── Telegram registration state (shared between sections 2 & 3) ──────────
+  const [tgStatus, setTgStatus] = useState(null);
+  const [tgCodeData, setTgCodeData] = useState(null);
+  const [tgBusy, setTgBusy] = useState(false);
+  const [tgToast, setTgToast] = useState(null);
+  const tgPollRef = useRef(null);
+
+  async function loadTgStatus() {
+    try {
+      const s = await telegramRegistrationStatus();
+      setTgStatus(s);
+      if (s.registered && tgCodeData) setTgCodeData(null);
+    } catch (_) {}
+  }
+
+  useEffect(() => {
+    loadTgStatus();
+    return () => {
+      if (tgPollRef.current) clearInterval(tgPollRef.current);
+      if (csTstRef.current) clearTimeout(csTstRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (tgPollRef.current) clearInterval(tgPollRef.current);
+    if (tgCodeData && !tgStatus?.registered) {
+      tgPollRef.current = setInterval(loadTgStatus, 3000);
+    }
+    return () => { if (tgPollRef.current) clearInterval(tgPollRef.current); };
+  }, [tgCodeData, tgStatus?.registered]);
+
+  async function handleTgConnect() {
+    setTgBusy(true); setTgToast(null);
+    try {
+      const d = await telegramRegisterStart();
+      setTgCodeData(d);
+    } catch (err) {
+      setTgToast({ ok: false, msg: apiErrorMessage(err) });
+    } finally { setTgBusy(false); }
+  }
+
+  async function handleTgDisconnect() {
+    setTgBusy(true); setTgToast(null);
+    try {
+      await telegramUnregister();
+      setTgCodeData(null);
+      await loadTgStatus();
+      setTgToast({ ok: true, msg: "Telegram disconnected." });
+    } catch (err) {
+      setTgToast({ ok: false, msg: apiErrorMessage(err) });
+    } finally { setTgBusy(false); }
+  }
+
+  const tgRegistered = tgStatus?.registered;
+  const tgBotUsername = tgCodeData?.bot_username;
+  const tgFormattedDate = tgStatus?.registered_at
+    ? new Intl.DateTimeFormat("en-US", { month: "long", day: "numeric", year: "numeric" }).format(new Date(tgStatus.registered_at))
+    : null;
+
+  // ── Users data ───────────────────────────────────────────────────────────
   const [userSearch, setUserSearch] = useState("");
-  const [filtersOpen, setFiltersOpen] = useState(false);
-  const [userFilters, setUserFilters] = useState({ role: "All" });
-  const activeFilterCount = Object.values(userFilters).filter((value) => value !== "All").length;
   const createdUsers = useMemo(
     () => users
-      .filter((user) => !user.is_demo && !demoUserEmails.has(String(user.email || "").toLowerCase()))
-      .toSorted((first, second) => {
-        const secondCreated = new Date(second.created_at || 0).getTime();
-        const firstCreated = new Date(first.created_at || 0).getTime();
-        return secondCreated - firstCreated || Number(second.id || 0) - Number(first.id || 0);
+      .filter((u) => !u.is_demo && !demoUserEmails.has(String(u.email || "").toLowerCase()))
+      .toSorted((a, b) => {
+        const bd = new Date(b.created_at || 0).getTime();
+        const ad = new Date(a.created_at || 0).getTime();
+        return bd - ad || Number(b.id || 0) - Number(a.id || 0);
       }),
     [users]
   );
-
   const filteredUsers = useMemo(() => {
-    const query = userSearch.trim().toLowerCase();
-    return createdUsers.filter((user) => {
-      const editRole = normalizeRoleValue(user.role || "");
-      const matchesQuery = !query || [
-        user.name,
-        user.email,
-        editRole,
-        roleLabel(editRole)
-      ].join(" ").toLowerCase().includes(query);
-      const matchesRole = userFilters.role === "All" || editRole === userFilters.role;
-      return matchesQuery && matchesRole;
-    });
-  }, [createdUsers, userFilters, userSearch]);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function loadConnectors() {
-      try {
-        const [connectorPayload, logPayload] = await Promise.all([
-          getConnectors(),
-          getCommunicationLogs()
-        ]);
-        if (!cancelled) {
-          setConnectors(connectorPayload.connectors || []);
-          setGoogleEmailConfigured(Boolean(connectorPayload.google_email_configured));
-          setCommunicationLogs(logPayload.logs || []);
-        }
-      } catch (err) {
-        if (!cancelled) setError(apiErrorMessage(err));
-      }
-    }
-    loadConnectors();
-    return () => {
-      cancelled = true;
-    };
-  }, [setError]);
-
-  async function refreshConnectors(message = "") {
-    const [connectorPayload, logPayload] = await Promise.all([
-      getConnectors(),
-      getCommunicationLogs()
-    ]);
-    setConnectors(connectorPayload.connectors || []);
-    setGoogleEmailConfigured(Boolean(connectorPayload.google_email_configured));
-    setCommunicationLogs(logPayload.logs || []);
-    setConnectorToast(message);
-  }
-
-  function updateCreateField(field, value) {
-    setForm((current) => ({ ...current, [field]: value }));
-    setFormErrors((current) => ({ ...current, [field]: "" }));
-  }
-
-  function openCreateUser() {
-    if (!isAdmin) return;
-    setError("");
-    setFormErrors({});
-    setForm({ name: "", email: "", password: "", confirmPassword: "", role: "employee" });
-    setCreateOpen(true);
-  }
-
-  function closeCreateUser() {
-    setCreateOpen(false);
-    setFormErrors({});
-    setForm({ name: "", email: "", password: "", confirmPassword: "", role: "employee" });
-  }
-
-  function validateCreateUser() {
-    const errors = {};
-    if (!form.name.trim()) errors.name = "Required";
-    if (!form.email.trim()) {
-      errors.email = "Required";
-    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) {
-      errors.email = "Enter a valid email";
-    }
-    if (!form.password) {
-      errors.password = "Required";
-    } else if (form.password.length < 6) {
-      errors.password = "Use at least 6 characters";
-    }
-    if (!form.confirmPassword) {
-      errors.confirmPassword = "Required";
-    } else if (form.password !== form.confirmPassword) {
-      errors.confirmPassword = "Passwords do not match";
-    }
-    if (!roleOptions.includes(normalizeRoleValue(form.role))) {
-      errors.role = "Choose a role";
-    }
-    setFormErrors(errors);
-    return Object.keys(errors).length === 0;
-  }
-
-  async function submitCreate(event) {
-    event.preventDefault();
-    if (!isAdmin) return;
-    if (!validateCreateUser()) {
-      userFormRef.current?.classList.add("form-shake");
-      setTimeout(() => userFormRef.current?.classList.remove("form-shake"), 400);
-      return;
-    }
-    setError("");
-    setSaving(true);
-    try {
-      await createUser({
-        name: form.name.trim(),
-        email: form.email.trim(),
-        password: form.password,
-        role: normalizeRoleValue(form.role)
-      });
-      closeCreateUser();
-      await onChanged();
-    } catch (err) {
-      setError(apiErrorMessage(err));
-    } finally {
-      setSaving(false);
-    }
-  }
+    const q = userSearch.trim().toLowerCase();
+    if (!q) return createdUsers;
+    return createdUsers.filter((u) =>
+      [u.name, u.email, roleLabel(u.role)].join(" ").toLowerCase().includes(q)
+    );
+  }, [createdUsers, userSearch]);
 
   return (
     <section className="settings-page screen-stack">
-      {!isAdmin && (
-        <div className="vendors-page-header settings-page-header">
-          <div className="page-title">
-            <div className="directory-title-row">
-              <h1>Settings</h1>
+
+      {/* ─────────────────── SECTION 1: CONNECTORS ────────────────────── */}
+      <div className="settings-card" style={{ marginTop: "0" }}>
+        <div className="settings-card-header">
+          <div style={{ display: "flex", alignItems: "flex-start", gap: "12px" }}>
+            <div className="settings-icon-wrap">
+              <Plug size={16} color="#EF4444" />
             </div>
-            <p>Manage your profile and communication connectors.</p>
+            <div>
+              <h2 className="settings-card-title">Connectors</h2>
+              <p className="settings-card-subtitle">
+                Configure Email and WhatsApp accounts for vendor reminders, approvals, and vendor messages.
+              </p>
+            </div>
           </div>
+          <button className="settings-logs-pill" onClick={showComingSoon} type="button">
+            5 Logs &rsaquo;
+          </button>
         </div>
-      )}
-      <ConnectorsPanel
-        connectors={connectors}
-        googleEmailConfigured={googleEmailConfigured}
-        logs={communicationLogs}
-        onConfigure={async (connector) => {
-          setError("");
-          if (connector.connector_type !== "email") {
-            setConnectorModal(connector);
-            return null;
-          }
-          try {
-            const payload = await startGoogleEmailConnection();
-            if (!payload.configured) {
-              return payload;
-            }
-            if (payload.authorization_url) {
-              window.location.href = payload.authorization_url;
-            }
-            return payload;
-          } catch (err) {
-            setError(apiErrorMessage(err));
-            return null;
-          }
-        }}
-        onDisconnect={async (connectorType) => {
-          setError("");
-          try {
-            await (connectorType === "email" ? disconnectGoogleEmail() : disconnectConnector(connectorType));
-            await refreshConnectors("Connector disconnected");
-          } catch (err) {
-            setError(apiErrorMessage(err));
-          }
-        }}
-        onTest={async (connectorType) => {
-          setError("");
-          try {
-            await (connectorType === "email" ? testGoogleEmailConnector() : testWhatsAppConnector());
-            await refreshConnectors("Connector test completed");
-          } catch (err) {
-            setError(apiErrorMessage(err));
-          }
-        }}
-        onSendTest={(connector) => setConnectorModal({ ...connector, sendTest: true })}
-      />
-      <TelegramPanel currentUser={currentUser} />
-      {connectorToast && <div className="toast-notification" role="status">{connectorToast}</div>}
+
+        <div className="vendor-table-wrap" style={{ marginBottom: "0", borderRadius: "8px", overflow: "hidden" }}>
+          <table className="vendor-table">
+            <thead>
+              <tr>
+                <th>Connector</th>
+                <th>Provider</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {/* ── Email row ── */}
+              <tr>
+                <td>
+                  <div className="settings-connector-name">
+                    <div className="settings-icon-wrap sm"><Mail size={14} color="#EF4444" /></div>
+                    <div>
+                      <strong>Email</strong>
+                      <span className="settings-connector-sub">Mock Email</span>
+                    </div>
+                  </div>
+                </td>
+                <td>
+                  <strong>Mock Email</strong>
+                  <span className="settings-connector-sub">Gmail OAuth</span>
+                </td>
+                <td>
+                  <span className="settings-status-chip not-connected">
+                    <span className="settings-status-dot" />
+                    Not Connected
+                  </span>
+                </td>
+                <td>
+                  <div className="settings-action-cell">
+                    <button className="table-action-button" onClick={showComingSoon} title="Configure" type="button">
+                      <Settings size={15} />
+                    </button>
+                    <button className="table-action-button" onClick={showComingSoon} title="More actions" type="button">
+                      <MoreVertical size={15} />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+              {/* ── WhatsApp row ── */}
+              <tr>
+                <td>
+                  <div className="settings-connector-name">
+                    <div className="settings-icon-wrap sm"><MessageCircle size={14} color="#EF4444" /></div>
+                    <div>
+                      <strong>WhatsApp</strong>
+                      <span className="settings-connector-sub">Mock WhatsApp</span>
+                    </div>
+                  </div>
+                </td>
+                <td>
+                  <strong>Mock WhatsApp</strong>
+                  <span className="settings-connector-sub">Mock or not configured</span>
+                </td>
+                <td>
+                  <span className="settings-status-chip mock-mode">
+                    <span className="settings-status-dot" />
+                    Mock Mode
+                  </span>
+                </td>
+                <td>
+                  <div className="settings-action-cell">
+                    <button className="table-action-button" onClick={showComingSoon} title="Configure" type="button">
+                      <Settings size={15} />
+                    </button>
+                    <button className="table-action-button" onClick={showComingSoon} title="More actions" type="button">
+                      <MoreVertical size={15} />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div className="settings-connector-actions">
+          <button className="primary-button" onClick={showComingSoon} type="button">
+            <Plus size={14} />
+            Connect / Configure
+          </button>
+          <button className="icon-button secondary" onClick={showComingSoon} type="button">
+            <Send size={14} />
+            Send Test
+          </button>
+          <button className="icon-button secondary" onClick={showComingSoon} type="button">
+            <Trash2 size={14} />
+            Disconnect
+          </button>
+        </div>
+      </div>
+
+      {/* ──────────────── SECTION 2: TELEGRAM INTEGRATION ─────────────── */}
+      <div className="settings-card">
+        <div className="settings-card-header">
+          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <div className="settings-icon-wrap">
+              <Send size={16} color="#EF4444" />
+            </div>
+            <h2 className="settings-card-title">Telegram Integration</h2>
+          </div>
+          <span
+            className={`am-status-pill ${tgStatus?.listener_active ? "running" : "stopped"}`}
+            style={{ fontSize: "11px", flexShrink: 0 }}
+          >
+            {tgStatus?.listener_active ? "Listener Active" : "Listener Idle"}
+          </span>
+        </div>
+
+        {tgToast && (
+          <div className={`connector-toast ${tgToast.ok ? "ok" : "err"}`} style={{ marginBottom: "14px" }}>
+            {tgToast.msg}
+          </div>
+        )}
+
+        {tgRegistered ? (
+          // ── Connected ──────────────────────────────────────────────────
+          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+            <p style={{ margin: 0, color: "var(--text-secondary)" }}>
+              <span className="settings-status-dot connected" style={{ marginRight: "6px" }} />
+              <strong>Connected</strong> — Telegram chat linked
+              {tgFormattedDate ? ` since ${tgFormattedDate}` : ""}.
+              {" "}You can now message the bot directly on Telegram.
+            </p>
+            <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
+              <button className="icon-button secondary" onClick={handleTgDisconnect} disabled={tgBusy} type="button">
+                <Trash2 size={14} />
+                {tgBusy ? "…" : "Disconnect"}
+              </button>
+              {tgBotUsername && (
+                <a
+                  href={`https://t.me/${tgBotUsername}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="primary-button"
+                  style={{ textDecoration: "none", fontSize: "13px" }}
+                >
+                  Open @{tgBotUsername}
+                </a>
+              )}
+            </div>
+          </div>
+        ) : tgCodeData ? (
+          // ── Showing registration code ──────────────────────────────────
+          <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+            <p style={{ margin: 0, color: "var(--text-secondary)" }}>
+              <span className="settings-status-dot pending" style={{ marginRight: "6px" }} />
+              Your one-time code expires in <strong>10 minutes</strong>. Follow these steps:
+            </p>
+            <ol style={{ margin: 0, paddingLeft: "20px", color: "var(--text-secondary)", lineHeight: "1.8" }}>
+              <li>Open Telegram and search for <strong>@{tgCodeData.bot_username || "your bot"}</strong></li>
+              <li>Send the bot this message:</li>
+            </ol>
+            <div style={{
+              background: "var(--input-bg, #141414)",
+              border: "1px solid var(--border-color)",
+              borderRadius: "8px",
+              padding: "12px 16px",
+              fontFamily: "monospace",
+              fontSize: "16px",
+              letterSpacing: "2px",
+              color: "#EF4444",
+              fontWeight: 700,
+              userSelect: "all",
+            }}>
+              /register {tgCodeData.code}
+            </div>
+            <p style={{ margin: 0, fontSize: "12px", color: "var(--text-muted)" }}>
+              ⏳ This page will automatically update when you complete registration.
+            </p>
+            <button
+              className="icon-button secondary"
+              onClick={() => { setTgCodeData(null); setTgToast(null); }}
+              style={{ alignSelf: "flex-start" }}
+              type="button"
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          // ── Not connected ──────────────────────────────────────────────
+          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+            <p style={{ margin: 0, color: "var(--text-secondary)" }}>
+              <span className="settings-status-dot disconnected" style={{ marginRight: "6px" }} />
+              Not connected. Link your Telegram to query Agent Concierge directly from the bot.
+            </p>
+            <button
+              className="primary-button"
+              onClick={handleTgConnect}
+              disabled={tgBusy}
+              style={{ alignSelf: "flex-start" }}
+              type="button"
+            >
+              <MessageCircle size={14} />
+              {tgBusy ? "Generating code…" : "Connect Telegram"}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* ──────────────── SECTION 3: TELEGRAM PIN ────────────────────── */}
+      {tgRegistered && <TelegramPinPanel />}
+
+      {/* ──────────────── SECTION 4: USERS ───────────────────────────── */}
       {isAdmin && (
         <>
-          <div className="vendors-page-header settings-page-header user-management-top">
+          <div className="vendors-page-header settings-page-header user-management-top" style={{ marginTop: "32px" }}>
             <div className="page-title">
               <div className="directory-title-row">
                 <h1>Users</h1>
@@ -11680,116 +12001,104 @@ function SettingsView({ currentUser, health, onChanged, setError, users }) {
               <label className="vendor-search-control user-search-control" aria-label="Search users">
                 <Search size={17} />
                 <input
-                  onChange={(event) => setUserSearch(event.target.value)}
+                  onChange={(e) => setUserSearch(e.target.value)}
                   placeholder="Search users..."
                   value={userSearch}
                 />
                 {userSearch && (
-                  <button
-                    aria-label="Clear user search"
-                    onClick={() => setUserSearch("")}
-                    title="Clear user search"
-                    type="button"
-                  >
+                  <button aria-label="Clear search" onClick={() => setUserSearch("")} type="button">
                     <X size={15} />
                   </button>
                 )}
               </label>
-              <div className="vendor-filter-wrap">
-                <button
-                  aria-expanded={filtersOpen}
-                  className="icon-button secondary vendor-filter-button"
-                  onClick={() => setFiltersOpen((open) => !open)}
-                  type="button"
-                >
-                  <Filter size={17} />
-                  <span>Filter</span>
-                  {activeFilterCount > 0 && <strong>{activeFilterCount}</strong>}
-                </button>
-                {filtersOpen && (
-                  <div className="vendor-filter-panel user-filter-panel" role="dialog" aria-label="User filters">
-                    <label>
-                      Role
-                      <CustomSelect
-                        value={userFilters.role}
-                        onChange={(val) => setUserFilters((current) => ({ ...current, role: val }))}
-                        options={[{ value: "All", label: "All" }, ...roleOptions.map((r) => ({ value: r, label: roleLabel(r) }))]}
-                        width="160px"
-                      />
-                    </label>
-                    <button className="table-action-button" onClick={() => setUserFilters({ role: "All" })} type="button">Clear</button>
-                  </div>
-                )}
-              </div>
-              <button className="primary-button vendor-add-button" onClick={openCreateUser} type="button">
+              <button className="icon-button secondary vendor-filter-button" onClick={showComingSoon} type="button">
+                <Filter size={17} />
+                <span>Filter</span>
+              </button>
+              <button className="primary-button vendor-add-button" onClick={showComingSoon} type="button">
                 <Plus size={18} />
                 <span>Add User</span>
               </button>
             </div>
           </div>
-          <UserManagement currentUser={currentUser} filteredUsers={filteredUsers} onChanged={onChanged} setError={setError} totalUsers={createdUsers.length} users={createdUsers} />
+
+          <section className="dashboard-card user-management-card">
+            <div className="vendor-table-wrap user-table-wrap">
+              <table className="vendor-table user-table">
+                <thead>
+                  <tr>
+                    <th>User</th>
+                    <th>Name</th>
+                    <th>Email</th>
+                    <th>Role</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredUsers.length === 0 ? (
+                    <tr>
+                      <td colSpan="5">
+                        <EmptyState icon={UserRound} title="No users match." detail="Adjust search to show more users." />
+                      </td>
+                    </tr>
+                  ) : filteredUsers.map((user) => {
+                    const avatarClass = `user-avatar avatar-${user.id % 4}`;
+                    return (
+                      <tr key={user.id}>
+                        <td>
+                          <div className="user-identity-cell">
+                            <span className={avatarClass}>{initials(user.name || user.email)}</span>
+                            <div>
+                              <strong>{user.email}</strong>
+                              <span>{formatCreatedDate(user.created_at)}</span>
+                            </div>
+                          </div>
+                        </td>
+                        <td>{user.name}</td>
+                        <td>{user.email}</td>
+                        <td>
+                          <CustomSelect
+                            value={normalizeRoleValue(user.role)}
+                            onChange={showComingSoon}
+                            options={roleOptions.map((r) => ({ value: r, label: roleLabel(r) }))}
+                            width="160px"
+                          />
+                        </td>
+                        <td>
+                          <div className="user-actions-cell">
+                            <button className="table-action-button user-action-icon" onClick={showComingSoon} title="Edit" type="button">
+                              <Pencil size={16} />
+                            </button>
+                            <button className="table-action-button user-action-icon" onClick={showComingSoon} title="Delete" type="button">
+                              <Trash2 size={16} />
+                            </button>
+                            <button className="table-action-button user-action-icon" onClick={showComingSoon} title="More" type="button">
+                              <MoreVertical size={16} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </section>
         </>
       )}
-      {connectorModal && (
-        <ConnectorConfigModal
-          connector={connectorModal}
-          currentUser={currentUser}
-          onClose={() => setConnectorModal(null)}
-          onSaved={async (message) => {
-            setConnectorModal(null);
-            await refreshConnectors(message);
+
+      {/* ── Coming soon toast ─────────────────────────────────────────────── */}
+      {csTst && (
+        <div
+          className="toast-notification"
+          role="status"
+          style={{
+            background: "var(--surface-bg-soft, #1c1c1c)",
+            border: "1px solid var(--border-color, #27272a)",
+            color: "var(--text-secondary, #a1a1aa)",
           }}
-          setError={setError}
-        />
-      )}
-      {createOpen && (
-        <div className="modal-backdrop" role="presentation">
-          <form className="vendor-modal user-create-modal" onSubmit={submitCreate} ref={userFormRef} role="dialog" aria-modal="true" aria-label="Create user">
-            <div className="section-heading">
-              <h2>Create User</h2>
-              <button className="icon-only" onClick={closeCreateUser} type="button" aria-label="Close create user form">
-                <X size={16} />
-              </button>
-            </div>
-            <div className="vendor-form-grid">
-              <label className="vendor-field">
-                Name
-                <input className={formErrors.name ? "input-error" : ""} value={form.name} onChange={(event) => updateCreateField("name", event.target.value)} />
-                <FormError message={formErrors.name} />
-              </label>
-              <label className="vendor-field">
-                Email
-                <input className={formErrors.email ? "input-error" : ""} type="email" value={form.email} onChange={(event) => updateCreateField("email", event.target.value)} />
-                <FormError message={formErrors.email} />
-              </label>
-              <label className="vendor-field">
-                Password
-                <input className={formErrors.password ? "input-error" : ""} type="password" value={form.password} onChange={(event) => updateCreateField("password", event.target.value)} />
-                <FormError message={formErrors.password} />
-              </label>
-              <label className="vendor-field">
-                Confirm password
-                <input className={formErrors.confirmPassword ? "input-error" : ""} type="password" value={form.confirmPassword} onChange={(event) => updateCreateField("confirmPassword", event.target.value)} />
-                <FormError message={formErrors.confirmPassword} />
-              </label>
-              <label className="vendor-field wide">
-                Role
-                <CustomSelect
-                  value={form.role}
-                  onChange={(val) => updateCreateField("role", val)}
-                  options={roleOptions.map((r) => ({ value: r, label: roleLabel(r) }))}
-                  width="160px"
-                />
-                <FormError message={formErrors.role} />
-              </label>
-            </div>
-            <div className="vendor-modal-actions">
-              <button className="icon-button secondary" onClick={closeCreateUser} type="button">Cancel</button>
-              <button className="primary-button" disabled={saving} type="submit">
-                {saving ? "Creating..." : "Create User"}
-              </button>
-            </div>
-          </form>
+        >
+          {csTst}
         </div>
       )}
     </section>

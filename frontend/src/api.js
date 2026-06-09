@@ -629,3 +629,27 @@ export function telegramRegistrationStatus() {
 export function telegramUnregister() {
   return request("/api/telegram/unregister", { method: "POST" });
 }
+
+// ── Telegram PIN (Phase C.3) ─────────────────────────────────────────────────
+
+export function telegramPinStatus() {
+  return request("/api/telegram/pin");
+}
+
+export function telegramSetPin(pin) {
+  return request("/api/telegram/pin", {
+    method: "POST",
+    body: JSON.stringify({ pin }),
+  });
+}
+
+export function telegramChangePin(old_pin, new_pin) {
+  return request("/api/telegram/pin", {
+    method: "PUT",
+    body: JSON.stringify({ old_pin, new_pin }),
+  });
+}
+
+export function telegramRemovePin() {
+  return request("/api/telegram/pin", { method: "DELETE" });
+}

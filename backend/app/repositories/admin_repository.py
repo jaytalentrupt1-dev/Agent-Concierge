@@ -1,9 +1,30 @@
 from __future__ import annotations
 
+import hashlib as _hashlib
 import json
-from datetime import datetime, timezone
+import os as _os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+
+# ── PIN helpers (PBKDF2, stdlib only) ────────────────────────────────────────
+
+def _hash_pin(pin: str, salt: bytes | None = None) -> str:
+    """Return 'salt_hex:hash_hex' using PBKDF2-HMAC-SHA256."""
+    if salt is None:
+        salt = _os.urandom(16)
+    dk = _hashlib.pbkdf2_hmac("sha256", pin.encode("utf-8"), salt, 100_000)
+    return f"{salt.hex()}:{dk.hex()}"
+
+
+def _verify_pin(pin: str, stored: str) -> bool:
+    """Return True if pin matches the PBKDF2 hash."""
+    try:
+        salt_hex, _ = stored.split(":", 1)
+        return _hash_pin(pin, bytes.fromhex(salt_hex)) == stored
+    except Exception:
+        return False
 
 from app.db.database import Database
 from app.services.approval_rules import ApprovalRulesService
@@ -502,7 +523,7 @@ class AdminRepository:
             conn.execute("ALTER TABLE users ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0")
 
     def _ensure_telegram_columns(self, conn) -> None:
-        """Add Telegram chat-ID columns to users (idempotent)."""
+        """Add Telegram columns to users (idempotent)."""
         columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()
         }
@@ -512,6 +533,15 @@ class AdminRepository:
             conn.execute("ALTER TABLE users ADD COLUMN telegram_chat_id INTEGER NULL DEFAULT NULL")
         if "telegram_registered_at" not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN telegram_registered_at TEXT NULL DEFAULT NULL")
+        # Phase C.3 — PIN columns
+        if "telegram_pin_hash" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN telegram_pin_hash TEXT NULL DEFAULT NULL")
+        if "telegram_pin_set_at" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN telegram_pin_set_at TEXT NULL DEFAULT NULL")
+        if "telegram_pin_failed_attempts" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN telegram_pin_failed_attempts INTEGER NOT NULL DEFAULT 0")
+        if "telegram_pin_locked_until" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN telegram_pin_locked_until TEXT NULL DEFAULT NULL")
         # Index for fast lookup by chat_id (CREATE INDEX IF NOT EXISTS is idempotent)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_users_telegram_chat_id ON users(telegram_chat_id)"
@@ -3706,6 +3736,108 @@ class AdminRepository:
                 "UPDATE telegram_registration_codes SET used = 1 WHERE code = ?",
                 (str(code),),
             )
+
+    # ── Telegram PIN methods (Phase C.3) ──────────────────────────────────────
+
+    def set_telegram_pin(self, user_id: int, pin: str) -> None:
+        """Hash and store a new PIN, clearing any existing lock state.
+        NEVER logs the PIN or its hash.
+        """
+        h = _hash_pin(pin)
+        now = utc_now()
+        with self.db.connection() as conn:
+            conn.execute(
+                """UPDATE users SET
+                   telegram_pin_hash = ?,
+                   telegram_pin_set_at = ?,
+                   telegram_pin_failed_attempts = 0,
+                   telegram_pin_locked_until = NULL
+                   WHERE id = ?""",
+                (h, now, int(user_id)),
+            )
+
+    def clear_telegram_pin(self, user_id: int) -> None:
+        """Remove the PIN from the user's account."""
+        with self.db.connection() as conn:
+            conn.execute(
+                """UPDATE users SET
+                   telegram_pin_hash = NULL,
+                   telegram_pin_set_at = NULL,
+                   telegram_pin_failed_attempts = 0,
+                   telegram_pin_locked_until = NULL
+                   WHERE id = ?""",
+                (int(user_id),),
+            )
+
+    def get_telegram_pin_status(self, user_id: int) -> dict:
+        """Return {has_pin, locked, locked_until, failed_attempts}."""
+        with self.db.connection() as conn:
+            row = conn.execute(
+                """SELECT telegram_pin_hash, telegram_pin_locked_until,
+                          telegram_pin_failed_attempts
+                   FROM users WHERE id = ?""",
+                (int(user_id),),
+            ).fetchone()
+        if not row:
+            return {"has_pin": False, "locked": False, "locked_until": None, "failed_attempts": 0}
+        now = utc_now()
+        locked_until = row["telegram_pin_locked_until"]
+        locked = bool(locked_until and locked_until > now)
+        return {
+            "has_pin": bool(row["telegram_pin_hash"]),
+            "locked": locked,
+            "locked_until": locked_until,
+            "failed_attempts": row["telegram_pin_failed_attempts"] or 0,
+        }
+
+    def verify_telegram_pin(self, user_id: int, pin: str) -> dict:
+        """Verify a PIN attempt. Returns {ok} on success or {ok: False, locked, attempts_remaining}.
+        Increments failed-attempt counter; locks for 30 min after 3 failures.
+        NEVER logs the PIN in any form.
+        """
+        with self.db.connection() as conn:
+            row = conn.execute(
+                """SELECT telegram_pin_hash, telegram_pin_locked_until,
+                          telegram_pin_failed_attempts
+                   FROM users WHERE id = ?""",
+                (int(user_id),),
+            ).fetchone()
+        if not row or not row["telegram_pin_hash"]:
+            return {"ok": False, "error": "no_pin_set"}
+
+        now = utc_now()
+        locked_until = row["telegram_pin_locked_until"]
+        if locked_until and locked_until > now:
+            return {"ok": False, "locked": True, "locked_until": locked_until, "attempts_remaining": 0}
+
+        if _verify_pin(pin, row["telegram_pin_hash"]):
+            with self.db.connection() as conn:
+                conn.execute(
+                    "UPDATE users SET telegram_pin_failed_attempts = 0, telegram_pin_locked_until = NULL WHERE id = ?",
+                    (int(user_id),),
+                )
+            return {"ok": True}
+        else:
+            attempts = (row["telegram_pin_failed_attempts"] or 0) + 1
+            new_locked_until = None
+            if attempts >= 3:
+                new_locked_until = (
+                    datetime.now(timezone.utc) + timedelta(minutes=30)
+                ).isoformat()
+            with self.db.connection() as conn:
+                conn.execute(
+                    """UPDATE users SET
+                       telegram_pin_failed_attempts = ?,
+                       telegram_pin_locked_until = ?
+                       WHERE id = ?""",
+                    (attempts, new_locked_until, int(user_id)),
+                )
+            return {
+                "ok": False,
+                "locked": bool(new_locked_until),
+                "locked_until": new_locked_until,
+                "attempts_remaining": max(0, 3 - attempts),
+            }
 
     # ── User row deserialiser ─────────────────────────────────────────────────
 
