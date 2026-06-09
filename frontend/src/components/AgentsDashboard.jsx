@@ -312,14 +312,135 @@ function AgentCard({ agent, onRun, running, onViewLogs, runResult, setToast }) {
   );
 }
 
+/* ─── AgentHealthReport modal ────────────────────────────────────── */
+function AgentHealthReport({ agents, logs, onClose }) {
+  const now = Date.now();
+  const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
+  const recentLogs = logs.filter((l) => new Date(l.created_at || l.timestamp || 0).getTime() >= sevenDaysAgo);
+
+  const perAgent = agents.map((agent) => {
+    const agentLogs = recentLogs.filter((l) => l.agent_name === agent.name || l.name === agent.name);
+    const runs = agentLogs.length;
+    const successes = agentLogs.filter((l) => l.status === "success").length;
+    const failures = agentLogs.filter((l) => l.status === "error" || l.status === "failed").length;
+    const rate = runs > 0 ? Math.round((successes / runs) * 100) : null;
+    const lastRun = agent.last_run ? new Date(agent.last_run) : null;
+    const lastRunStr = lastRun
+      ? lastRun.toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+      : "Never";
+    return { agent, runs, successes, failures, rate, lastRunStr };
+  });
+
+  const totalRuns = recentLogs.length;
+  const totalSuccess = recentLogs.filter((l) => l.status === "success").length;
+  const overallRate = totalRuns > 0 ? Math.round((totalSuccess / totalRuns) * 100) : 100;
+  const errorAgents = agents.filter((a) => a.last_status === "error");
+
+  return (
+    <div className="modal-backdrop" role="presentation" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <section className="vendor-modal" style={{ maxWidth: "720px", width: "95vw", maxHeight: "85vh", overflow: "auto" }} role="dialog" aria-modal="true" aria-label="Full health report">
+        <div className="section-heading" style={{ marginBottom: "20px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <Activity size={18} color="#EF4444" />
+            <h2 style={{ margin: 0 }}>Full Agent Health Report</h2>
+          </div>
+          <button className="icon-only" onClick={onClose} type="button" aria-label="Close">
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* ── Summary row ── */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: "12px", marginBottom: "24px" }}>
+          {[
+            { label: "Overall Success Rate (7d)", value: `${overallRate}%`, icon: <TrendingUp size={20} color="#EF4444" /> },
+            { label: "Total Runs (7d)", value: totalRuns, icon: <BarChart2 size={20} color="#EF4444" /> },
+            { label: "Agents with Errors", value: errorAgents.length, icon: <AlertCircle size={20} color={errorAgents.length > 0 ? "#F59E0B" : "#22C55E"} /> },
+          ].map(({ label, value, icon }) => (
+            <div key={label} style={{ background: "var(--surface-bg-soft)", border: "1px solid var(--border-color)", borderRadius: "8px", padding: "14px 16px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" }}>{icon}<span style={{ fontSize: "12px", color: "var(--text-muted)" }}>{label}</span></div>
+              <span style={{ fontSize: "22px", fontWeight: 700, color: "var(--text-primary)" }}>{value}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* ── Per-agent table ── */}
+        <table className="vendor-table" style={{ marginBottom: "0" }}>
+          <thead>
+            <tr>
+              <th>Agent</th>
+              <th>Status</th>
+              <th>Last Run</th>
+              <th>Runs (7d)</th>
+              <th>Success</th>
+              <th>Failures</th>
+              <th>Rate</th>
+            </tr>
+          </thead>
+          <tbody>
+            {perAgent.map(({ agent, runs, successes, failures, rate, lastRunStr }) => {
+              const meta = AGENT_META[agent.name] || {};
+              const isOk = agent.last_status === "success" || !agent.last_status;
+              const isPaused = agent.paused;
+              return (
+                <tr key={agent.name}>
+                  <td>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <span style={{ fontSize: "16px" }}>{meta.icon || "🤖"}</span>
+                      <span style={{ fontWeight: 500 }}>{meta.label || agent.name}</span>
+                    </div>
+                  </td>
+                  <td>
+                    <span className={`am-status-pill ${isPaused ? "paused" : isOk ? "running" : "stopped"}`} style={{ fontSize: "11px" }}>
+                      {isPaused ? "Paused" : isOk ? "Healthy" : "Error"}
+                    </span>
+                  </td>
+                  <td style={{ fontSize: "12px", color: "var(--text-muted)" }}>{lastRunStr}</td>
+                  <td style={{ textAlign: "center" }}>{runs}</td>
+                  <td style={{ textAlign: "center", color: "#22C55E" }}>{successes}</td>
+                  <td style={{ textAlign: "center", color: failures > 0 ? "#EF4444" : "var(--text-muted)" }}>{failures}</td>
+                  <td style={{ textAlign: "center", fontWeight: 600 }}>
+                    {rate !== null ? (
+                      <span style={{ color: rate >= 80 ? "#22C55E" : rate >= 50 ? "#F59E0B" : "#EF4444" }}>{rate}%</span>
+                    ) : <span style={{ color: "var(--text-muted)" }}>—</span>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+
+        {/* ── Recent errors ── */}
+        {errorAgents.length > 0 && (
+          <div style={{ marginTop: "20px" }}>
+            <h3 style={{ fontSize: "13px", fontWeight: 600, color: "var(--text-secondary)", marginBottom: "10px" }}>Agents Currently in Error State</h3>
+            {errorAgents.map((a) => (
+              <div key={a.name} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 12px", background: "rgba(239,68,68,0.06)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: "6px", marginBottom: "6px" }}>
+                <AlertCircle size={14} color="#EF4444" />
+                <span style={{ fontWeight: 500 }}>{AGENT_META[a.name]?.label || a.name}</span>
+                {a.last_run && <span style={{ fontSize: "11px", color: "var(--text-muted)", marginLeft: "auto" }}>Last run: {new Date(a.last_run).toLocaleString()}</span>}
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "20px" }}>
+          <button className="icon-button secondary" onClick={onClose} type="button">Close</button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 /* ─── AgentHealthPanel ───────────────────────────────────────────── */
 function AgentHealthPanel({ agents, logs }) {
+  const [showReport, setShowReport] = useState(false);
   const successCount = logs.filter((l) => l.status === "success").length;
   const totalLogs    = logs.length;
   const successRate  = totalLogs > 0 ? Math.round((successCount / totalLogs) * 100) : 100;
   const errors       = agents.filter((a) => a.last_status === "error");
 
   return (
+    <>
     <aside className="am-health-panel">
       <div className="am-health-header">
         <Activity size={15} color="#EF4444" />
@@ -360,10 +481,12 @@ function AgentHealthPanel({ agents, logs }) {
         </div>
       </div>
 
-      <button className="am-health-report-btn" type="button">
+      <button className="am-health-report-btn" onClick={() => setShowReport(true)} type="button">
         View full health report <span className="am-health-arrow">›</span>
       </button>
     </aside>
+    {showReport && <AgentHealthReport agents={agents} logs={logs} onClose={() => setShowReport(false)} />}
+    </>
   );
 }
 

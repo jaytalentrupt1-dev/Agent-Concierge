@@ -3718,22 +3718,73 @@ html:not([data-theme="dark"]) .table-action-button.ticket-icon-action.action-sta
 }
 
 /* FIX 2 — Column widths (8 columns) */
+/* 1:Task ID  2:Title  3:Category  4:Assigned To  5:Priority  6:Status  7:Due Date  8:Description  9:Actions */
 .task-table th:nth-child(1),
-.task-table td:nth-child(1) { width: 80px !important; min-width: 80px !important; }
+.task-table td:nth-child(1) { width: 90px !important;  min-width: 90px !important; white-space: nowrap !important; }
 .task-table th:nth-child(2),
-.task-table td:nth-child(2) { width: 220px !important; min-width: 220px !important; }
+.task-table td:nth-child(2) { width: 160px !important; min-width: 160px !important; }
 .task-table th:nth-child(3),
-.task-table td:nth-child(3) { width: 90px !important; min-width: 90px !important; }
+.task-table td:nth-child(3) { width: 90px !important;  min-width: 90px !important; }
 .task-table th:nth-child(4),
-.task-table td:nth-child(4) { width: 130px !important; min-width: 130px !important; }
+.task-table td:nth-child(4) { width: 120px !important; min-width: 120px !important; }
 .task-table th:nth-child(5),
-.task-table td:nth-child(5) { width: 80px !important; min-width: 80px !important; }
+.task-table td:nth-child(5) { width: 80px !important;  min-width: 80px !important; }
 .task-table th:nth-child(6),
-.task-table td:nth-child(6) { width: 120px !important; min-width: 120px !important; }
+.task-table td:nth-child(6) { width: 110px !important; min-width: 110px !important; }
 .task-table th:nth-child(7),
-.task-table td:nth-child(7) { width: 100px !important; min-width: 100px !important; white-space: nowrap !important; }
+.task-table td:nth-child(7) { width: 90px !important;  min-width: 90px !important; white-space: nowrap !important; }
+.task-table th:nth-child(8),
+.task-table td:nth-child(8) { width: 240px !important; min-width: 180px !important; }
 .task-table th:last-child,
-.task-table td:last-child    { width: 90px !important; min-width: 90px !important; text-align: right !important; }
+.task-table td:last-child    { width: 80px !important;  min-width: 80px !important; text-align: right !important; }
+
+/* ── Inventory table column widths ──────────────────────────────────────── */
+/* 1:checkbox  2:Employee  3:Serial  4:Model  5:RAM  6:Disk  7:Location  8:Branch  9:Status  10:Notes  11:Actions */
+.inventory-table th:nth-child(1),
+.inventory-table td:nth-child(1)  { width: 36px !important;  min-width: 36px !important;  padding-left: 12px !important; }
+.inventory-table th:nth-child(2),
+.inventory-table td:nth-child(2)  { width: 130px !important; min-width: 130px !important; }
+.inventory-table th:nth-child(3),
+.inventory-table td:nth-child(3)  { width: 110px !important; min-width: 110px !important; white-space: nowrap !important; }
+.inventory-table th:nth-child(4),
+.inventory-table td:nth-child(4)  { width: 140px !important; min-width: 140px !important; }
+.inventory-table th:nth-child(5),
+.inventory-table td:nth-child(5)  { width: 70px !important;  min-width: 70px !important;  white-space: nowrap !important; }
+.inventory-table th:nth-child(6),
+.inventory-table td:nth-child(6)  { width: 80px !important;  min-width: 80px !important;  white-space: nowrap !important; }
+.inventory-table th:nth-child(7),
+.inventory-table td:nth-child(7)  { width: 100px !important; min-width: 100px !important; }
+.inventory-table th:nth-child(8),
+.inventory-table td:nth-child(8)  { width: 80px !important;  min-width: 80px !important;  white-space: nowrap !important; }
+.inventory-table th:nth-child(9),
+.inventory-table td:nth-child(9)  { width: 100px !important; min-width: 100px !important; }
+.inventory-table th:nth-child(10),
+.inventory-table td:nth-child(10) { width: 180px !important; min-width: 140px !important; }
+.inventory-table th:last-child,
+.inventory-table td:last-child    { width: 90px !important;  min-width: 90px !important;  text-align: right !important; }
+
+/* ── Report table column widths ─────────────────────────────────────────── */
+/* 1:Report ID  2:Report Name  3:Type  4:Department  5:Uploaded By  6:Date  7:File Type  8:Status  9:Actions */
+.report-table { table-layout: fixed !important; width: 100% !important; }
+.report-table th:nth-child(1),
+.report-table td:nth-child(1) { width: 90px !important;  white-space: nowrap !important; }
+.report-table th:nth-child(2),
+.report-table td:nth-child(2) { width: 220px !important; }
+.report-table th:nth-child(3),
+.report-table td:nth-child(3) { width: 110px !important; }
+.report-table th:nth-child(4),
+.report-table td:nth-child(4) { width: 100px !important; }
+.report-table th:nth-child(5),
+.report-table td:nth-child(5) { width: 160px !important; }
+.report-table th:nth-child(6),
+.report-table td:nth-child(6) { width: 130px !important; white-space: nowrap !important; }
+.report-table th:nth-child(7),
+.report-table td:nth-child(7) { width: 80px !important;  white-space: nowrap !important; }
+.report-table th:nth-child(8),
+.report-table td:nth-child(8) { width: 80px !important;  white-space: nowrap !important; }
+.report-table th:last-child,
+.report-table td:last-child   { width: 100px !important; text-align: center !important; }
+.report-table td:last-child .table-actions { justify-content: center !important; }
 
 /* FIX 3 — Column headers */
 .task-table th {

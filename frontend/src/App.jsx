@@ -3256,7 +3256,7 @@ function DashboardActionableInsights({ tickets = [], pendingApprovals = [], onNa
       title: "High Ticket Volume",
       description: `${openTickets} tickets are currently open. Review and prioritize assignments.`,
       ctaLabel: "View tickets",
-      onCta: () => onNavigate?.("tickets")
+      onCta: () => onNavigate?.("approvals")
     },
     {
       id: "sla_risk",
@@ -3264,7 +3264,7 @@ function DashboardActionableInsights({ tickets = [], pendingApprovals = [], onNa
       title: "SLA Risk",
       description: `${highPriority} high-priority tickets may breach SLA. Immediate attention needed.`,
       ctaLabel: "View high priority",
-      onCta: () => onNavigate?.("tickets")
+      onCta: () => onNavigate?.("approvals")
     },
     {
       id: "pending_approvals",
@@ -3386,7 +3386,7 @@ function DashboardAdminBottomSection({ tickets = [], inventoryItems = [], onNavi
       <section className="admin-hp-tickets-card">
         <div className="admin-bottom-card-header">
           <h3>Recent High Priority Tickets</h3>
-          <button type="button" className="admin-view-all-link" onClick={() => onNavigate?.("tickets")}>View all</button>
+          <button type="button" className="admin-view-all-link" onClick={() => onNavigate?.("approvals")}>View all</button>
         </div>
         {highPriorityTickets.length === 0 ? (
           <div className="dashboard-chart-empty"><ShieldAlert size={20} /><span>No high priority tickets.</span></div>
@@ -5448,6 +5448,7 @@ function TaskTable({
             <th>Priority</th>
             <th>Status</th>
             <th>Due Date</th>
+            <th>Description</th>
             <th>Actions</th>
           </tr>
         </thead>
@@ -5461,10 +5462,7 @@ function TaskTable({
               <tr key={task.id}>
                 <td className="task-id-cell">{task.task_id}</td>
                 <td className="task-title-cell">
-                  <div className="task-title-text">{taskTitle || task.description || "—"}</div>
-                  {taskTitle && task.description && (
-                    <div className="task-desc-text">{task.description}</div>
-                  )}
+                  <div className="task-title-text">{taskTitle || "—"}</div>
                 </td>
                 <td className="task-nowrap">{task.category}</td>
                 <td className="task-assignee-cell">
@@ -5476,6 +5474,9 @@ function TaskTable({
                 <td><span className={`task-priority-text priority-${priorityKey}`}>{task.priority}</span></td>
                 <td><span className={`task-status-badge status-${statusKey}`}>{task.status}</span></td>
                 <td className="task-date-cell">{formatCalendarDate(task.due_date)}</td>
+                <td className="task-desc-cell" style={{ color: "var(--text-muted)", fontSize: "12px", lineHeight: "1.4" }}>
+                  {task.description || "—"}
+                </td>
                 <td>
                   <div className="table-actions task-actions">
                     <button
@@ -6223,7 +6224,6 @@ function TicketTable({
                 </td>
                 <td className="ticket-person-cell">
                   <strong>{ticketAssignedLabel(ticket)}</strong>
-                  <span>{roleLabel(ticket.assigned_role)}</span>
                 </td>
                 <td className="ticket-date-cell">{formatCalendarDate(ticket.created_at)}</td>
                 <td className="ticket-date-cell">{formatCalendarDate(ticket.due_date)}</td>
@@ -11735,6 +11735,67 @@ function SettingsView({ currentUser, health, onChanged, setError, users }) {
     ? new Intl.DateTimeFormat("en-US", { month: "long", day: "numeric", year: "numeric" }).format(new Date(tgStatus.registered_at))
     : null;
 
+  // ── Create user modal ────────────────────────────────────────────────────
+  const [createOpen, setCreateOpen] = useState(false);
+  const [form, setForm] = useState({ name: "", email: "", password: "", confirmPassword: "", role: "employee" });
+  const [formErrors, setFormErrors] = useState({});
+  const [saving, setSaving] = useState(false);
+  const userFormRef = useRef(null);
+
+  function updateCreateField(field, value) {
+    setForm((c) => ({ ...c, [field]: value }));
+    setFormErrors((c) => ({ ...c, [field]: "" }));
+  }
+
+  function openCreateUser() {
+    setForm({ name: "", email: "", password: "", confirmPassword: "", role: "employee" });
+    setFormErrors({});
+    setCreateOpen(true);
+  }
+
+  function closeCreateUser() {
+    setCreateOpen(false);
+    setFormErrors({});
+  }
+
+  function validateCreateUser() {
+    const errors = {};
+    if (!form.name.trim()) errors.name = "Required";
+    if (!form.email.trim()) errors.email = "Required";
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) errors.email = "Enter a valid email";
+    if (!form.password) errors.password = "Required";
+    else if (form.password.length < 6) errors.password = "Use at least 6 characters";
+    if (!form.confirmPassword) errors.confirmPassword = "Required";
+    else if (form.password !== form.confirmPassword) errors.confirmPassword = "Passwords do not match";
+    if (!roleOptions.includes(normalizeRoleValue(form.role))) errors.role = "Choose a role";
+    setFormErrors(errors);
+    return Object.keys(errors).length === 0;
+  }
+
+  async function submitCreate(event) {
+    event.preventDefault();
+    if (!validateCreateUser()) {
+      userFormRef.current?.classList.add("form-shake");
+      setTimeout(() => userFormRef.current?.classList.remove("form-shake"), 400);
+      return;
+    }
+    setSaving(true);
+    try {
+      await createUser({
+        name: form.name.trim(),
+        email: form.email.trim(),
+        password: form.password,
+        role: normalizeRoleValue(form.role),
+      });
+      closeCreateUser();
+      await onChanged();
+    } catch (err) {
+      setError(apiErrorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
   // ── Users data ───────────────────────────────────────────────────────────
   const [userSearch, setUserSearch] = useState("");
   const createdUsers = useMemo(
@@ -12015,76 +12076,67 @@ function SettingsView({ currentUser, health, onChanged, setError, users }) {
                 <Filter size={17} />
                 <span>Filter</span>
               </button>
-              <button className="primary-button vendor-add-button" onClick={showComingSoon} type="button">
+              <button className="primary-button vendor-add-button" onClick={openCreateUser} type="button">
                 <Plus size={18} />
                 <span>Add User</span>
               </button>
             </div>
           </div>
 
-          <section className="dashboard-card user-management-card">
-            <div className="vendor-table-wrap user-table-wrap">
-              <table className="vendor-table user-table">
-                <thead>
-                  <tr>
-                    <th>User</th>
-                    <th>Name</th>
-                    <th>Email</th>
-                    <th>Role</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredUsers.length === 0 ? (
-                    <tr>
-                      <td colSpan="5">
-                        <EmptyState icon={UserRound} title="No users match." detail="Adjust search to show more users." />
-                      </td>
-                    </tr>
-                  ) : filteredUsers.map((user) => {
-                    const avatarClass = `user-avatar avatar-${user.id % 4}`;
-                    return (
-                      <tr key={user.id}>
-                        <td>
-                          <div className="user-identity-cell">
-                            <span className={avatarClass}>{initials(user.name || user.email)}</span>
-                            <div>
-                              <strong>{user.email}</strong>
-                              <span>{formatCreatedDate(user.created_at)}</span>
-                            </div>
-                          </div>
-                        </td>
-                        <td>{user.name}</td>
-                        <td>{user.email}</td>
-                        <td>
-                          <CustomSelect
-                            value={normalizeRoleValue(user.role)}
-                            onChange={showComingSoon}
-                            options={roleOptions.map((r) => ({ value: r, label: roleLabel(r) }))}
-                            width="160px"
-                          />
-                        </td>
-                        <td>
-                          <div className="user-actions-cell">
-                            <button className="table-action-button user-action-icon" onClick={showComingSoon} title="Edit" type="button">
-                              <Pencil size={16} />
-                            </button>
-                            <button className="table-action-button user-action-icon" onClick={showComingSoon} title="Delete" type="button">
-                              <Trash2 size={16} />
-                            </button>
-                            <button className="table-action-button user-action-icon" onClick={showComingSoon} title="More" type="button">
-                              <MoreVertical size={16} />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </section>
+          <UserManagement currentUser={currentUser} filteredUsers={filteredUsers} onChanged={onChanged} setError={setError} totalUsers={createdUsers.length} users={createdUsers} useModalEdit />
         </>
+      )}
+
+      {/* ── Create user modal ────────────────────────────────────────────── */}
+      {createOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <form className="vendor-modal user-create-modal" onSubmit={submitCreate} ref={userFormRef} role="dialog" aria-modal="true" aria-label="Create user">
+            <div className="section-heading">
+              <h2>Create User</h2>
+              <button className="icon-only" onClick={closeCreateUser} type="button" aria-label="Close">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="vendor-form-grid">
+              <label className="vendor-field">
+                Name
+                <input className={formErrors.name ? "input-error" : ""} value={form.name} onChange={(e) => updateCreateField("name", e.target.value)} />
+                <FormError message={formErrors.name} />
+              </label>
+              <label className="vendor-field">
+                Email
+                <input className={formErrors.email ? "input-error" : ""} type="email" value={form.email} onChange={(e) => updateCreateField("email", e.target.value)} />
+                <FormError message={formErrors.email} />
+              </label>
+              <label className="vendor-field">
+                Password
+                <input className={formErrors.password ? "input-error" : ""} type="password" value={form.password} onChange={(e) => updateCreateField("password", e.target.value)} />
+                <FormError message={formErrors.password} />
+              </label>
+              <label className="vendor-field">
+                Confirm password
+                <input className={formErrors.confirmPassword ? "input-error" : ""} type="password" value={form.confirmPassword} onChange={(e) => updateCreateField("confirmPassword", e.target.value)} />
+                <FormError message={formErrors.confirmPassword} />
+              </label>
+              <label className="vendor-field wide">
+                Role
+                <CustomSelect
+                  value={form.role}
+                  onChange={(val) => updateCreateField("role", val)}
+                  options={roleOptions.map((r) => ({ value: r, label: roleLabel(r) }))}
+                  width="160px"
+                />
+                <FormError message={formErrors.role} />
+              </label>
+            </div>
+            <div className="vendor-modal-actions">
+              <button className="icon-button secondary" onClick={closeCreateUser} type="button">Cancel</button>
+              <button className="primary-button" disabled={saving} type="submit">
+                {saving ? "Creating..." : "Create User"}
+              </button>
+            </div>
+          </form>
+        </div>
       )}
 
       {/* ── Coming soon toast ─────────────────────────────────────────────── */}
@@ -12105,12 +12157,15 @@ function SettingsView({ currentUser, health, onChanged, setError, users }) {
   );
 }
 
-function UserManagement({ currentUser, filteredUsers, onChanged, setError, totalUsers, users }) {
+function UserManagement({ currentUser, filteredUsers, onChanged, setError, totalUsers, users, useModalEdit }) {
   const [edits, setEdits] = useState({});
   const [passwords, setPasswords] = useState({});
   const [openMenuUserId, setOpenMenuUserId] = useState(null);
   const [deletingUser, setDeletingUser] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [editingUser, setEditingUser] = useState(null);
+  const [editForm, setEditForm] = useState({ name: "", email: "", role: "employee" });
+  const [editSaving, setEditSaving] = useState(false);
   const [userPage, setUserPage] = useState(1);
   const USER_PAGE_SIZE = 10;
   const userPageCount = Math.max(1, Math.ceil(filteredUsers.length / USER_PAGE_SIZE));
@@ -12175,6 +12230,26 @@ function UserManagement({ currentUser, filteredUsers, onChanged, setError, total
     }
   }
 
+  function openEditModal(user) {
+    setEditForm({ name: user.name || "", email: user.email || "", role: normalizeRoleValue(user.role) });
+    setEditingUser(user);
+  }
+
+  async function submitEditModal(e) {
+    e.preventDefault();
+    if (!editingUser) return;
+    setEditSaving(true);
+    try {
+      await updateUser(editingUser.id, { name: editForm.name.trim(), email: editForm.email.trim(), role: normalizeRoleValue(editForm.role) });
+      setEditingUser(null);
+      await onChanged();
+    } catch (err) {
+      setError(apiErrorMessage(err));
+    } finally {
+      setEditSaving(false);
+    }
+  }
+
   return (
     <section className="dashboard-card user-management-card">
       <div className="vendor-table-wrap user-table-wrap">
@@ -12211,26 +12286,20 @@ function UserManagement({ currentUser, filteredUsers, onChanged, setError, total
                     </div>
                   </div>
                 </td>
+                <td>{useModalEdit ? user.name : <input className="user-table-input" aria-label={`Name for ${user.email}`} value={edit.name} onChange={(event) => setEdits({ ...edits, [user.id]: { ...edit, name: event.target.value } })} />}</td>
+                <td>{useModalEdit ? user.email : <input className="user-table-input" aria-label={`Email for ${user.email}`} type="email" value={edit.email} onChange={(event) => setEdits({ ...edits, [user.id]: { ...edit, email: event.target.value } })} />}</td>
                 <td>
-                  <input className="user-table-input" aria-label={`Name for ${user.email}`} value={edit.name} onChange={(event) => setEdits({ ...edits, [user.id]: { ...edit, name: event.target.value } })} />
-                </td>
-                <td>
-                  <input className="user-table-input" aria-label={`Email for ${user.email}`} type="email" value={edit.email} onChange={(event) => setEdits({ ...edits, [user.id]: { ...edit, email: event.target.value } })} />
-                </td>
-                <td>
-                  <CustomSelect
-                    value={edit.role}
-                    onChange={(val) => setEdits({ ...edits, [user.id]: { ...edit, role: val } })}
-                    options={roleOptions.map((r) => ({ value: r, label: roleLabel(r) }))}
-                    width="160px"
-                  />
+                  {useModalEdit
+                    ? <span style={{ fontSize: "13px" }}>{roleLabel(normalizeRoleValue(user.role))}</span>
+                    : <CustomSelect value={edit.role} onChange={(val) => setEdits({ ...edits, [user.id]: { ...edit, role: val } })} options={roleOptions.map((r) => ({ value: r, label: roleLabel(r) }))} width="160px" />
+                  }
                 </td>
                 <td>
                   <div className="user-actions-cell">
                     <button
                       aria-label={`Edit ${user.email}`}
                       className="table-action-button user-action-icon user-edit-button"
-                      onClick={() => saveUser(user.id)}
+                      onClick={() => useModalEdit ? openEditModal(user) : saveUser(user.id)}
                       title="Edit user"
                       type="button"
                     >
@@ -12319,6 +12388,43 @@ function UserManagement({ currentUser, filteredUsers, onChanged, setError, total
               </button>
             </div>
           </section>
+        </div>
+      )}
+      {editingUser && (
+        <div className="modal-backdrop" role="presentation">
+          <form className="vendor-modal user-create-modal" onSubmit={submitEditModal} role="dialog" aria-modal="true" aria-label="Edit user">
+            <div className="section-heading">
+              <h2>Edit User</h2>
+              <button className="icon-only" onClick={() => setEditingUser(null)} type="button" aria-label="Close">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="vendor-form-grid">
+              <label className="vendor-field">
+                Name
+                <input value={editForm.name} onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))} />
+              </label>
+              <label className="vendor-field">
+                Email
+                <input type="email" value={editForm.email} onChange={(e) => setEditForm((f) => ({ ...f, email: e.target.value }))} />
+              </label>
+              <label className="vendor-field wide">
+                Role
+                <CustomSelect
+                  value={editForm.role}
+                  onChange={(val) => setEditForm((f) => ({ ...f, role: val }))}
+                  options={roleOptions.map((r) => ({ value: r, label: roleLabel(r) }))}
+                  width="160px"
+                />
+              </label>
+            </div>
+            <div className="vendor-modal-actions">
+              <button className="icon-button secondary" onClick={() => setEditingUser(null)} type="button">Cancel</button>
+              <button className="primary-button" disabled={editSaving} type="submit">
+                {editSaving ? "Saving..." : "Save Changes"}
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </section>
